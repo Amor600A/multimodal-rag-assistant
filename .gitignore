@@ -1,0 +1,16 @@
+# 敏感配置
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 运行时产物
+uploads/
+
+# IDE
+.idea/
+.vscode/

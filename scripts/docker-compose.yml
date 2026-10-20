@@ -1,0 +1,95 @@
+# ============================================================
+# 依赖编排版 docker-compose（方案 14.2）
+#
+# 用途：仅启动依赖服务（postgres / redis / etcd / minio / milvus），
+#       应用在本机以 uvicorn 运行，改 .env 开关即切换后端（见方案 14.3）。
+#
+# 使用：
+#   启动：docker compose -f scripts/docker-compose.yml up -d
+#   停止：docker compose -f scripts/docker-compose.yml down      # named volumes 保留数据
+#   清空：docker compose -f scripts/docker-compose.yml down -v   # 连同数据卷一起删除
+#
+# 注意：
+#   1. Milvus standalone 必须带 etcd + minio，不能单容器起
+#   2. milvus 三件套内存占用较高，官方建议运行环境可用内存 >= 4GB（8GB 更稳妥）
+#   3. 纯 Mock 模式开发无需启动任何容器（零外部依赖）
+# ============================================================
+
+services:
+  # ---- PostgreSQL：业务表（departments/users/sessions/images）+ langgraph store ----
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag_dev_password
+      POSTGRES_DB: rag_assistant
+    ports: ["5432:5432"]
+    volumes: [pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag_assistant"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---- Redis：langgraph checkpointer（短期记忆）+ token 吊销 ----
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---- Milvus standalone 三件套：etcd（元数据）+ minio（对象存储）+ milvus ----
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes: [etcd_data:/etcd]
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data
+    volumes: [minio_data:/minio_data]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  milvus:
+    image: milvusdb/milvus:v2.4.15
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports: ["19530:19530", "9091:9091"]
+    volumes: [milvus_data:/var/lib/milvus]
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ---- 可选：应用容器化（完整容器化形态时取消注释，需先补 Dockerfile）----
+  # app:
+  #   build: .
+  #   ports: ["8000:8000"]
+  #   env_file: .env
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #     milvus: { condition: service_started }
+
+volumes:
+  pg_data:
+  redis_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

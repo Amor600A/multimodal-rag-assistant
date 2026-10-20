@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>多模态 RAG 助手</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- 登录页 -->
+  <div id="login-view" class="login-view">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <h1 class="login-title">多模态 RAG 助手</h1>
+      <p class="login-sub">企业知识问答（Mock 模式）</p>
+      <label class="field">
+        <span>用户名</span>
+        <input id="login-username" type="text" autocomplete="username" required>
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="login-password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" id="login-btn" class="primary-btn">登录</button>
+      <p id="login-error" class="error-text"></p>
+      <p class="login-hint">测试账号：alice / alice123（人事部）　bob / bob123（市场部）　admin / admin123</p>
+    </form>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="app-view" class="app-view hidden">
+    <header class="topbar">
+      <button id="sidebar-toggle" class="ghost-btn narrow-only" type="button">会话</button>
+      <div class="brand">多模态 RAG 助手</div>
+      <div class="topbar-right">
+        <span id="user-info" class="user-info"></span>
+        <button id="logout-btn" class="ghost-btn" type="button">退出登录</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-title">会话列表</span>
+          <button id="new-session-btn" class="ghost-btn" type="button">新建</button>
+        </div>
+        <ul id="session-list" class="session-list"></ul>
+      </aside>
+
+      <main class="chat-pane">
+        <div id="messages" class="messages">
+          <div class="empty-tip" id="empty-tip">
+            <p>开始你的第一个问题吧。</p>
+            <p class="empty-sub">可以问：公司简介 / 差旅报销制度 / 考勤请假制度 / 信息安全规范</p>
+          </div>
+        </div>
+
+        <div id="image-preview" class="image-preview hidden"></div>
+
+        <div class="composer">
+          <label class="upload-btn" title="上传图片">
+            <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <span>图片</span>
+          </label>
+          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="send-btn" class="send-btn" type="button">发送</button>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="/app.js?v=3"></script>
+</body>
+</html>

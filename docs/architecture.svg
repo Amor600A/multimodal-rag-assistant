@@ -1,0 +1,95 @@
+<svg viewBox="0 0 720 632" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="多模态RAG助手分层架构图">
+  <defs>
+    <marker id="arrB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="#22c55e"/>
+    </marker>
+    <marker id="arrN" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="#8b96a5"/>
+    </marker>
+  </defs>
+
+  <!-- 背景 -->
+  <rect x="0" y="0" width="720" height="632" fill="#0f141a"/>
+
+  <!-- 前端 -->
+  <rect x="200" y="20" width="320" height="52" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="360" y="42" text-anchor="middle" font-size="14" font-weight="600" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">前端 web/</text>
+  <text x="360" y="60" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">HTML + JS · fetch 流式解析 SSE</text>
+
+  <line x1="360" y1="72" x2="360" y2="94" stroke="#22c55e" stroke-width="2" marker-end="url(#arrB)"/>
+
+  <!-- HTTP 层 -->
+  <rect x="60" y="100" width="600" height="124" rx="12" fill="#141a22" stroke="#2c3644"/>
+  <text x="76" y="120" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">HTTP 层 · FastAPI（多用户）</text>
+  <rect x="76" y="128" width="568" height="24" rx="6" fill="#161d26" stroke="#2c3644"/>
+  <text x="360" y="144" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">JWT 认证中间件</text>
+
+  <rect x="76" y="162" width="130" height="44" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="141" y="181" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">auth</text>
+  <text x="141" y="197" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">登录注册</text>
+  <rect x="222" y="162" width="130" height="44" rx="8" fill="rgba(34,197,94,0.08)" stroke="#22c55e"/>
+  <text x="287" y="181" text-anchor="middle" font-size="12" font-weight="600" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">chat</text>
+  <text x="287" y="197" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">对话 (SSE)</text>
+  <rect x="368" y="162" width="130" height="44" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="433" y="181" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">session</text>
+  <text x="433" y="197" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">会话管理</text>
+  <rect x="514" y="162" width="130" height="44" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="579" y="181" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">knowledge</text>
+  <text x="579" y="197" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">文档入库</text>
+
+  <line x1="360" y1="224" x2="360" y2="246" stroke="#22c55e" stroke-width="2" marker-end="url(#arrB)"/>
+
+  <!-- 服务层 -->
+  <rect x="60" y="252" width="600" height="72" rx="12" fill="#141a22" stroke="#2c3644"/>
+  <text x="76" y="270" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">服务层 services</text>
+  <rect x="76" y="280" width="180" height="30" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="166" y="299" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">chat_service 对话编排</text>
+  <rect x="270" y="280" width="180" height="30" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="360" y="299" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">memory_service 记忆</text>
+  <rect x="464" y="280" width="180" height="30" rx="8" fill="#161d26" stroke="#2c3644"/>
+  <text x="554" y="299" text-anchor="middle" font-size="12" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">rag_service 检索</text>
+
+  <line x1="360" y1="324" x2="360" y2="346" stroke="#22c55e" stroke-width="2" marker-end="url(#arrB)"/>
+
+  <!-- Agent 层（核心） -->
+  <rect x="60" y="352" width="600" height="108" rx="12" fill="#161d26" stroke="#22c55e"/>
+  <text x="76" y="372" font-size="12" font-weight="600" fill="#22c55e" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">Agent 层 · LangGraph graph.astream 异步流式</text>
+
+  <rect x="76" y="384" width="150" height="56" rx="8" fill="#141a22" stroke="#2c3644"/>
+  <text x="151" y="408" text-anchor="middle" font-size="14" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">retrieve 检索</text>
+  <text x="151" y="426" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">向量库召回</text>
+  <rect x="278" y="384" width="150" height="56" rx="8" fill="#141a22" stroke="#2c3644"/>
+  <text x="353" y="408" text-anchor="middle" font-size="14" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">vision 多模态</text>
+  <text x="353" y="426" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">图文输入理解</text>
+  <rect x="480" y="384" width="150" height="56" rx="8" fill="#141a22" stroke="#2c3644"/>
+  <text x="555" y="408" text-anchor="middle" font-size="14" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">generate 生成</text>
+  <text x="555" y="426" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">流式 token 输出</text>
+  <line x1="228" y1="412" x2="272" y2="412" stroke="#22c55e" stroke-width="2" marker-end="url(#arrB)"/>
+  <line x1="430" y1="412" x2="474" y2="412" stroke="#22c55e" stroke-width="2" marker-end="url(#arrB)"/>
+
+  <!-- Agent 到基础设施 -->
+  <line x1="360" y1="460" x2="162" y2="482" stroke="#8b96a5" stroke-width="1.5" marker-end="url(#arrN)"/>
+  <line x1="360" y1="460" x2="360" y2="482" stroke="#8b96a5" stroke-width="1.5" marker-end="url(#arrN)"/>
+  <line x1="360" y1="460" x2="558" y2="482" stroke="#8b96a5" stroke-width="1.5" marker-end="url(#arrN)"/>
+
+  <!-- 基础设施三件套 -->
+  <rect x="66" y="488" width="188" height="104" rx="12" fill="#161d26" stroke="#2c3644"/>
+  <text x="80" y="512" font-size="14" font-weight="600" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">Checkpointer 短期记忆</text>
+  <text x="80" y="532" font-size="12" fill="#cdd6e0" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">当前 MemorySaver</text>
+  <text x="80" y="550" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">预留 MockRedisSaver</text>
+  <text x="80" y="568" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">预留 Redis / AsyncPG</text>
+
+  <rect x="266" y="488" width="188" height="104" rx="12" fill="#161d26" stroke="#2c3644"/>
+  <text x="280" y="512" font-size="14" font-weight="600" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">Store 长期记忆</text>
+  <text x="280" y="532" font-size="12" fill="#cdd6e0" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">当前 InMemoryStore</text>
+  <text x="280" y="550" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">预留 MockPostgresStore</text>
+  <text x="280" y="568" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">预留 AsyncPostgresStore</text>
+
+  <rect x="466" y="488" width="188" height="104" rx="12" fill="#161d26" stroke="#2c3644"/>
+  <text x="480" y="512" font-size="14" font-weight="600" fill="#e6edf3" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">VectorDB 向量检索</text>
+  <text x="480" y="532" font-size="12" fill="#cdd6e0" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">当前 MockMilvus 适配层</text>
+  <text x="480" y="550" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">预留 pymilvus 客户端</text>
+  <text x="480" y="568" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">Milvus 服务端后置部署</text>
+
+  <text x="360" y="618" text-anchor="middle" font-size="12" fill="#8b96a5" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">绿色 = 核心链路 · 三个底层组件均由工厂函数按配置切换，业务代码零改动</text>
+</svg>
