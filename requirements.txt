@@ -22,9 +22,19 @@ bcrypt==4.0.1
 # 限流
 slowapi>=0.1.9,<0.2
 
-# 向量库
-pymilvus>=2.4.9,<3.0
+# 向量库（pymilvus 2.6 + milvus-lite 3.x；pyarrow 钉在 18 以下以兼容 numpy 1.x）
+pymilvus>=2.6.0,<3.0
+milvus-lite>=3.2.0,<4.0
+pyarrow>=15,<18
 numpy>=1.26.0,<2.0
+
+# 知识库建库脚本（PDF / DOCX / DOC / TXT 文本提取）
+pypdf>=5.0,<6.0
+python-docx>=1.1.0,<2.0
+# .doc（Word 97-2003）经 Word COM 转 .docx，需要 pywin32（仅 Windows）
+pywin32>=306; sys_platform == "win32"
+# DashScope 原生 SDK：多模态嵌入 multimodal-embedding-v1（文本/图片/视频同空间）
+dashscope>=1.20,<2.0
 
 # 测试（阶段 2 起随阶段编写）
 pytest>=8.3.0,<9.0

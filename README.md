@@ -138,9 +138,9 @@ PROJECT_PLAN.md              # 完整设计方案  TODO.md 真实后端切换任
 | USER_DB_BACKEND | mock_postgres | postgres（未实现，见 TODO.md） |
 | CHECKPOINTER_BACKEND | mock_redis | memory / redis / postgres（后两者未实现） |
 | STORE_BACKEND | mock_postgres | in_memory / postgres（未实现） |
-| VECTOR_BACKEND | mock | milvus（未实现） |
+| VECTOR_BACKEND | mock | milvus_lite（已实现）/ milvus（未实现，见 TODO.md） |
 | LLM_BACKEND | mock | openai_compatible |
-| EMBEDDING_BACKEND | hash | api |
+| EMBEDDING_BACKEND | hash | api（DashScope text-embedding-v1） |
 
 规则：
 

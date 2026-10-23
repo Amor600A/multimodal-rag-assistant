@@ -33,9 +33,9 @@ class Settings(BaseSettings):
     user_db_backend: str = "mock_postgres"      # mock_postgres | postgres
     checkpointer_backend: str = "mock_redis"    # memory | mock_redis | redis | postgres
     store_backend: str = "mock_postgres"            # in_memory | mock_postgres | postgres
-    vector_backend: str = "mock"                # mock | milvus
+    vector_backend: str = "mock"                # mock | milvus_lite | milvus
     llm_backend: str = "mock"                   # mock | openai_compatible
-    embedding_backend: str = "hash"             # hash | api
+    embedding_backend: str = "hash"             # hash | api | dashscope_mm
     token_revocation_backend: str = "memory"    # memory | redis
 
     # ---- LLM / Embedding（mock 模式下全部可留空，不校验）----
@@ -44,9 +44,10 @@ class Settings(BaseSettings):
     llm_model: str = "qwen-plus"         # 同上
     llm_vision_model: str = "qwen-vl-plus"  # 同上（vision 节点用）
     embedding_api_base: str = ""         # EMBEDDING_BACKEND=api 时必填
-    embedding_api_key: str = ""          # 同上
-    embedding_model: str = "text-embedding-v3"  # 同上
-    embedding_dim: int = 1536            # 嵌入维度，须与向量库 collection 一致
+    embedding_api_key: str = ""          # api / dashscope_mm 均必填
+    # 统一多模态空间用 multimodal-embedding-v1；纯文本兼容模式可用 text-embedding-v1
+    embedding_model: str = "multimodal-embedding-v1"
+    embedding_dim: int = 1024            # 嵌入维度，须与向量库 collection 一致
 
     # ---- Agent ----
     agent_enabled_tools: str = ""        # 留空 = 纯 RAG 链路；启用：已注册工具名逗号分隔，如 retrieval,memory
@@ -55,9 +56,11 @@ class Settings(BaseSettings):
     memory_extractor: str = "rule"           # 事实提取器：rule | llm
     memory_summary_every_turns: int = 10     # 每累计 N 轮生成/更新一次会话摘要
 
-    # ---- Milvus（VECTOR_BACKEND=milvus 时必填）----
+    # ---- Milvus（VECTOR_BACKEND=milvus 时 MILVUS_URI 必填）----
     milvus_uri: str = ""
     milvus_collection: str = "rag_knowledge"
+    # Milvus Lite 本地单文件路径（VECTOR_BACKEND=milvus_lite 时使用）
+    milvus_db_path: str = "data/milvus/rag_knowledge.db"
 
     # ---- 真实后端连接（对应 *_BACKEND 切换时启用，mock 可留空）----
     postgres_dsn: str = ""               # postgresql+asyncpg://...（业务表 + store 共用）
@@ -72,9 +75,9 @@ class Settings(BaseSettings):
         "user_db_backend": {"mock_postgres", "postgres"},
         "checkpointer_backend": {"memory", "mock_redis", "redis", "postgres"},
         "store_backend": {"in_memory", "mock_postgres", "postgres"},
-        "vector_backend": {"mock", "milvus"},
+        "vector_backend": {"mock", "milvus_lite", "milvus"},
         "llm_backend": {"mock", "openai_compatible"},
-        "embedding_backend": {"hash", "api"},
+        "embedding_backend": {"hash", "api", "dashscope_mm"},
         "token_revocation_backend": {"memory", "redis"},
         "memory_extractor": {"rule", "llm"},
     }
@@ -99,6 +102,16 @@ class Settings(BaseSettings):
             for f in ("embedding_api_base", "embedding_api_key", "embedding_model"):
                 if not getattr(self, f):
                     errors.append(f"EMBEDDING_BACKEND=api 需要设置 {f.upper()}")
+        if self.embedding_backend == "dashscope_mm":
+            for f in ("embedding_api_key", "embedding_model"):
+                if not getattr(self, f):
+                    errors.append(f"EMBEDDING_BACKEND=dashscope_mm 需要设置 {f.upper()}")
+            # multimodal-embedding-v1 不支持 dimension 参数，固定 1024 维
+            if self.embedding_model == "multimodal-embedding-v1" and self.embedding_dim != 1024:
+                errors.append(
+                    "EMBEDDING_MODEL=multimodal-embedding-v1 固定 1024 维，"
+                    f"当前 EMBEDDING_DIM={self.embedding_dim}"
+                )
         if self.vector_backend == "milvus" and not self.milvus_uri:
             errors.append("VECTOR_BACKEND=milvus 需要设置 MILVUS_URI")
         if self.user_db_backend == "postgres" and not self.postgres_dsn:

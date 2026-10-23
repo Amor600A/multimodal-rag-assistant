@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from app.rag.embedder import HashEmbedder
+from app.rag.embedder import get_embedder
 
 logger = logging.getLogger("app.infra.vectordb.mock_milvus")
 
@@ -118,7 +118,8 @@ class MockMilvus:
 
     def __init__(self) -> None:
         self._records: dict[str, VectorRecord] = {}
-        self._embedder = HashEmbedder()
+        # 嵌入器由工厂统一提供：Mock 与 Milvus Lite 共用同一实例，向量空间一致
+        self._embedder = get_embedder()
         logger.info("MockMilvus 初始化")
 
     def insert(self, records: list[dict]) -> None:

@@ -10,6 +10,7 @@ venv/
 
 # 运行时产物
 uploads/
+data/
 
 # IDE
 .idea/
