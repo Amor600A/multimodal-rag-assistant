@@ -84,7 +84,10 @@ def main() -> None:
 
     print("========== 检索到的文本块 ==========")
     for i, hit in enumerate(hits, start=1):
-        print(f"\n--- 第 {i} 个文本块 (score: {hit['score']:.4f}, 来源: {hit['source']}) ---")
+        print(
+            f"\n--- 第 {i} 个文本块 (score: {hit['score']:.4f}, 来源: {hit['source']}, "
+            f"类型: {hit['file_type'] or '-'}) ---"
+        )
         print(f"可见性: {hit['visibility']}  归属部门: {hit['dept_id'] or '-'}")
         print(f"内容:\n{hit['text']}")
     print("\n========== 检索到的文本块打印结束 ==========")

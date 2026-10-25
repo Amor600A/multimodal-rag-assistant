@@ -39,6 +39,7 @@ class VectorRecord:
     owner_user_id: str | None = None
     dept_id: str | None = None
     source: str = "manual"
+    file_type: str = ""   # 来源文件类型（pdf/docx/txt/png/video）
     created_at: int = field(default_factory=lambda: int(time.time()))
 
 
@@ -125,7 +126,7 @@ class MockMilvus:
     def insert(self, records: list[dict]) -> None:
         """批量插入向量记录。
 
-        record 字段（方案 6.1）：id, text, scope, visibility, owner_user_id?, dept_id?, source?
+        record 字段（方案 6.1）：id, text, scope, visibility, owner_user_id?, dept_id?, source?, file_type?
         vector 由 embedder 自动生成（也可显式传入）。
         """
         for r in records:
@@ -143,6 +144,7 @@ class MockMilvus:
                 owner_user_id=r.get("owner_user_id"),
                 dept_id=r.get("dept_id"),
                 source=r.get("source", "manual"),
+                file_type=r.get("file_type") or "",
             )
             self._records[r["id"]] = rec
 
@@ -199,5 +201,6 @@ def _record_to_dict(r: VectorRecord) -> dict:
         "owner_user_id": r.owner_user_id,
         "dept_id": r.dept_id,
         "source": r.source,
+        "file_type": r.file_type,
         "created_at": r.created_at,
     }

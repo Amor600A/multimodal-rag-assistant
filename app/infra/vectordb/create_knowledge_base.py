@@ -6,35 +6,45 @@
 
 支持格式：
     .pdf  -> 逐页提取，页码精确到页
-    .docx -> 无固定分页（分页由渲染决定），页码统一记为 1
-    .doc  -> Word 97-2003 二进制文档，经 Word COM 转成 .docx 后按 .docx 规则提取，页码记为 1
-    .txt  -> 纯文本，UTF-8 优先、GB18030 兜底，无分页，页码记为 1
+    .docx -> 无固定分页（分页由渲染决定），用切片序号定位（source 记为 文件名#c块序号）
+    .txt  -> 纯文本，UTF-8 优先、GB18030 兜底，无分页，同样用切片序号定位
     .jpg/.jpeg/.png/.bmp -> 图片不切分，一个文件一条记录（需 EMBEDDING_BACKEND=dashscope_mm）
     .mp4/.mov/.avi/.webm（公网 URL）-> 视频不切分，一条记录，同样需要多模态嵌入
 
 图片/视频记录没有正文，text 字段存 --description（缺省用文件名），
-用于检索结果展示与关键词过滤。
+用于检索结果展示与关键词过滤。所有记录都写入 file_type 字段（pdf/docx/txt/png/video），
+便于按来源类型区分；docx/txt 因无固定分页，source 用 #c块序号 而非 #p页码。
 
 改造说明（相对最初参考脚本）：
 1. 嵌入改用项目统一嵌入器（EMBEDDING_BACKEND=dashscope_mm 时为
    DashScope multimodal-embedding-v1，文本/图片/视频同处一个 1024 维语义空间），
    与线上检索共用同一向量空间
 2. 存储改用项目 MilvusLite（接口与 MockMilvus 一致），不再依赖 langchain_milvus
-3. 每条切片补充权限标量字段（scope/visibility/owner_user_id/dept_id），
-   否则检索时的权限 expr 无法命中
-4. 页码写入 source 字段（格式：文件名#p页码），不额外占用 schema 字段
+3. 每条切片补充权限标量字段（scope/visibility/owner_user_id/dept_id）与
+   来源类型字段 file_type，否则检索时的权限 expr 无法命中、也无法按类型区分
+4. 定位信息写入 source 字段：PDF 为 文件名#p页码，docx/txt 为 文件名#c块序号，
+   不额外占用 schema 字段
 
 用法：
     python -m app.infra.vectordb.create_knowledge_base 文档.pdf
     python -m app.infra.vectordb.create_knowledge_base 文档.docx --visibility dept --dept-id <部门ID>
-    python -m app.infra.vectordb.create_knowledge_base 文档.doc --visibility dept --dept-id <部门ID>
     python -m app.infra.vectordb.create_knowledge_base 手册.txt
     python -m app.infra.vectordb.create_knowledge_base 文档.pdf --visibility private --owner-user-id <用户ID>
     python -m app.infra.vectordb.create_knowledge_base 图片.png --description "园区导览图"
     python -m app.infra.vectordb.create_knowledge_base https://example.com/a.mp4 --description "入园须知视频"
 
+批量入库（目录约定，权限标记由目录结构决定，无需逐个指定 --visibility）：
+    python -m app.infra.vectordb.create_knowledge_base --dir data/knowledge
+    目录结构（相对 --dir 根目录）：
+        public/...              -> visibility=public
+        dept/<dept_id>/...      -> visibility=dept，dept_id 取自目录名
+        private/<user_id>/...   -> visibility=private，owner_user_id 取自目录名
+        根目录及其他目录下的文件  -> visibility=public
+    批量模式仅扫描本地文件（.pdf/.docx/.txt/图片），视频 URL 仍按单文件方式传入；
+    单文件失败不中断整批，结束打印成功/失败/跳过汇总。
+
 注意：Milvus Lite 为单文件独占，运行本脚本前请先停止后端服务，避免文件被占用。
-      .doc 需要本机安装 Microsoft Word（通过 COM 转换格式），.txt 需为 UTF-8 或 GBK 编码。
+      .txt 需为 UTF-8 或 GBK 编码。
 """
 
 from __future__ import annotations
@@ -124,57 +134,6 @@ def extract_text_from_docx(docx_path: str) -> Tuple[str, List[int]]:
     text = "\n".join(parts)
     return text, [1] * len(text)
 
-def extract_text_from_doc(doc_path: str) -> Tuple[str, List[int]]:
-    """从旧版 Word 文档（.doc，Word 97-2003）提取文本。
-
-    .doc 是 OLE2 复合二进制文档，python-docx 无法直接读取，
-    这里用 Word COM 另存为 .docx 后复用 extract_text_from_docx，
-    保证 .doc 与 .docx 的提取规则（正文段落 + 表格单元格）完全一致。
-
-    .doc 的分页同样由渲染决定，页码统一记为 1。
-
-    参数:
-        doc_path: DOC 文件路径
-    返回:
-        text: 提取的文本内容
-        char_page_mapping: 与 text 等长的页码列表（全部为 1）
-    """
-    import shutil
-    import tempfile
-
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise SystemExit(
-            "处理 .doc 需要 pywin32（pip install pywin32），且本机需安装 Microsoft Word"
-        ) from exc
-
-    tmp_dir = tempfile.mkdtemp(prefix="rag_doc_")
-    docx_path = os.path.join(tmp_dir, "converted.docx")
-    pythoncom.CoInitialize()
-    word = None
-    try:
-        word = win32com.client.Dispatch("Word.Application")
-        # 后台静默转换：不显示窗口、不弹恢复/覆盖提示
-        word.Visible = False
-        word.DisplayAlerts = 0
-        doc = word.Documents.Open(
-            os.path.abspath(doc_path), ReadOnly=True, AddToRecentFiles=False
-        )
-        doc.SaveAs2(docx_path, FileFormat=12)  # 12 = wdFormatXMLDocument
-        doc.Close(False)
-    finally:
-        if word is not None:
-            word.Quit()
-        pythoncom.CoUninitialize()
-
-    try:
-        return extract_text_from_docx(docx_path)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
 def extract_text_from_txt(txt_path: str) -> Tuple[str, List[int]]:
     """从纯文本文件提取文本。
 
@@ -197,7 +156,6 @@ def extract_text_from_txt(txt_path: str) -> Tuple[str, List[int]]:
 
     return text, [1] * len(text)
 
-
 def _media_embedder():
     """取出多模态嵌入器；图片/视频入库必须使用统一多模态空间。"""
     from app.core.config import get_settings
@@ -211,14 +169,12 @@ def _media_embedder():
         )
     return embedder
 
-
 def embed_image(image_path: str):
     """生成图片向量（1024 维，与文本同一语义空间）。
 
     由嵌入器负责读取本地文件并转 Base64，支持 jpg/jpeg/png/bmp。
     """
     return _media_embedder().embed_image(image_path)
-
 
 def embed_video(video_url: str):
     """生成视频向量（1024 维，与文本同一语义空间）。
@@ -267,10 +223,6 @@ def _split_with_offsets(text: str) -> List[Tuple[str, int]]:
     print(f"文本被分割成 {len(chunks)} 个块。")
     return chunks
 
-def split_text(text: str) -> List[str]:
-    """兼容原接口：只返回切片文本列表。"""
-    return [chunk for chunk, _ in _split_with_offsets(text)]
-
 def compute_chunk_pages(
     chunks: List[Tuple[str, int]], char_page_mapping: List[int]
 ) -> dict:
@@ -305,26 +257,15 @@ def compute_chunk_pages(
     print(f"页码映射完成，共 {len(page_info)} 个文本块")
     return page_info
 
-
-def build_milvus(
-    chunks: List[str],
-    page_info: dict,
-    doc_name: str,
-    save_path: str,
-    visibility: str,
-    dept_id: str | None,
-    owner_user_id: str | None,
-):
-    """把文本块与权限标量写入 Milvus Lite。
+def _write_records(records: List[dict], save_path: str, summary: str, db=None):
+    """把记录写入 Milvus Lite 并打印统计（文本切片与媒体记录共用的写库逻辑）。
 
     参数:
-        chunks: 文本块列表
-        page_info: {文本块内容: 页码}
-        doc_name: 来源文档名（写入 source 字段）
+        records: 待写入的记录列表（含 id/text/标量字段，媒体记录另带 vector）
         save_path: Milvus Lite 数据文件路径
-        visibility: public | dept | private
-        dept_id: visibility=dept 时的部门 ID
-        owner_user_id: visibility=private 时的归属用户 ID
+        summary: 写入条数的说明文本（如"切片""媒体记录（不切分）"），仅用于日志
+        db: 可选，外部传入的 MilvusLite 实例（批量入库时复用同一连接，
+            避免每个文件重复打开同一数据文件）；缺省时按 save_path 新建
     返回:
         已写入的 MilvusLite 实例
     """
@@ -332,36 +273,72 @@ def build_milvus(
     from app.infra.vectordb.milvus_lite import MilvusLite
 
     settings = get_settings()
-    db = MilvusLite(
-        db_path=save_path,
-        collection_name=settings.milvus_collection,
-        dim=settings.embedding_dim,
-    )
+    if db is None:
+        db = MilvusLite(
+            db_path=save_path,
+            collection_name=settings.milvus_collection,
+            dim=settings.embedding_dim,
+        )
 
+    db.insert(records)
+    print(f"已写入 {len(records)} 条{summary}，数据文件: {save_path}")
+    print(f"当前集合记录总数: {db.count()}（collection={settings.milvus_collection}）")
+    print(f"嵌入后端: {settings.embedding_backend}（model={settings.embedding_model}）")
+    return db
+
+def build_text_chunks(
+    chunks: List[str],
+    page_info: dict,
+    doc_name: str,
+    save_path: str,
+    visibility: str,
+    dept_id: str | None,
+    owner_user_id: str | None,
+    file_type: str = "",
+    use_page: bool = True,
+    db=None,
+):
+    """把文本块与权限标量写入 Milvus Lite。
+
+    参数:
+        chunks: 文本块列表
+        page_info: {文本块内容: 页码}（use_page=False 时不参与 source 拼接）
+        doc_name: 来源文档名（写入 source 字段）
+        save_path: Milvus Lite 数据文件路径
+        visibility: public | dept | private
+        dept_id: visibility=dept 时的部门 ID
+        owner_user_id: visibility=private 时的归属用户 ID
+        file_type: 来源文件类型（pdf/docx/txt），写入 file_type 字段
+        use_page: True 时 source 记 文件名#p页码（PDF 有真实分页）；
+                  False 时记 文件名#c块序号（docx/txt 无固定分页，用切片序号定位）
+        db: 可选，外部传入的 MilvusLite 实例（批量入库时复用同一连接，
+            避免每个文件重复打开同一数据文件）；缺省时按 save_path 新建
+    返回:
+        已写入的 MilvusLite 实例
+    """
     # private 归入 personal 区，其余归入 domain 区（与 knowledge 路由的打标规则一致）
     scope = "personal" if visibility == "private" else "domain"
 
     records: list[dict] = []
+    # 主键前缀取文件类型（pdf/docx/txt），缺省时用 doc 兜底，避免出现 "-哈希" 这种无意义 id
+    id_prefix = file_type or "doc"
     for i, chunk in enumerate(chunks):
-        page = page_info[chunk]
+        # PDF 用页码定位；docx/txt 无固定分页，用切片序号（从 1 开始）定位
+        locator = f"#p{page_info[chunk]}" if use_page else f"#c{i + 1}"
         # 用内容哈希做 id：同一份 PDF 重复建库时幂等覆盖，不会产生重复块
-        digest = hashlib.sha1(f"{doc_name}|{page}|{chunk}".encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha1(f"{doc_name}|{locator}|{chunk}".encode("utf-8")).hexdigest()[:16]
         records.append({
-            "id": f"pdf-{digest}",
+            "id": f"{id_prefix}-{digest}",
             "text": chunk,
             "scope": scope,
             "visibility": visibility,
             "owner_user_id": owner_user_id,
             "dept_id": dept_id,
-            "source": f"{doc_name}#p{page}",
+            "source": f"{doc_name}{locator}",
+            "file_type": file_type,
         })
 
-    db.insert(records)
-    print(f"已写入 {len(records)} 条切片，数据文件: {save_path}")
-    print(f"当前集合记录总数: {db.count()}（collection={settings.milvus_collection}）")
-    print(f"嵌入后端: {settings.embedding_backend}（model={settings.embedding_model}）")
-    return db
-
+    return _write_records(records, save_path, "切片", db=db)
 
 def build_media(
     vector,
@@ -372,6 +349,8 @@ def build_media(
     dept_id: str | None,
     owner_user_id: str | None,
     id_prefix: str,
+    file_type: str = "",
+    db=None,
 ):
     """写入单条媒体记录：图片/视频不切分，一个文件对应一个向量。
 
@@ -384,19 +363,12 @@ def build_media(
         dept_id: visibility=dept 时的部门 ID
         owner_user_id: visibility=private 时的归属用户 ID
         id_prefix: 主键前缀，图片 img、视频 vid
+        file_type: 来源文件类型（png/jpg/jpeg/bmp/video），写入 file_type 字段
+        db: 可选，外部传入的 MilvusLite 实例（批量入库时复用同一连接）；
+            缺省时按 save_path 新建
     返回:
         已写入的 MilvusLite 实例
     """
-    from app.core.config import get_settings
-    from app.infra.vectordb.milvus_lite import MilvusLite
-
-    settings = get_settings()
-    db = MilvusLite(
-        db_path=save_path,
-        collection_name=settings.milvus_collection,
-        dim=settings.embedding_dim,
-    )
-
     scope = "personal" if visibility == "private" else "domain"
     digest = hashlib.sha1(f"{doc_name}|{description}".encode("utf-8")).hexdigest()[:16]
     records = [{
@@ -408,14 +380,10 @@ def build_media(
         "owner_user_id": owner_user_id,
         "dept_id": dept_id,
         "source": doc_name,
+        "file_type": file_type,
     }]
 
-    db.insert(records)
-    print(f"已写入 1 条媒体记录（不切分），数据文件: {save_path}")
-    print(f"当前集合记录总数: {db.count()}（collection={settings.milvus_collection}）")
-    print(f"嵌入后端: {settings.embedding_backend}（model={settings.embedding_model}）")
-    return db
-
+    return _write_records(records, save_path, "媒体记录（不切分）", db=db)
 
 def process_text_with_splitter(
     text: str,
@@ -425,11 +393,14 @@ def process_text_with_splitter(
     visibility: str = "public",
     dept_id: str | None = None,
     owner_user_id: str | None = None,
+    file_type: str = "",
+    use_page: bool = True,
+    db=None,
 ):
     """处理文本并创建向量存储（保留原函数名与流程）。"""
     chunks = _split_with_offsets(text)
     page_info = compute_chunk_pages(chunks, char_page_mapping)
-    return build_milvus(
+    return build_text_chunks(
         [chunk for chunk, _ in chunks],
         page_info,
         doc_name,
@@ -437,14 +408,181 @@ def process_text_with_splitter(
         visibility,
         dept_id,
         owner_user_id,
+        file_type,
+        use_page,
+        db=db,
     )
+
+
+# 批量入库支持的本地文件类型（视频仅支持公网 URL，不参与目录扫描）
+_BATCH_EXTS = {".pdf", ".docx", ".txt"} | _IMAGE_EXTS
+
+
+def process_file(
+    file_arg: str,
+    visibility: str,
+    dept_id: str | None,
+    owner_user_id: str | None,
+    db_path: str,
+    description: str | None = None,
+    db=None,
+) -> None:
+    """处理单个文件/视频 URL 入库（从 main 抽出的单文件流程，逻辑保持不变）。
+
+    参数:
+        file_arg: 文档/图片本地路径，或视频 http(s) URL
+        visibility: public | dept | private
+        dept_id: visibility=dept 时的部门 ID
+        owner_user_id: visibility=private 时的归属用户 ID
+        db_path: Milvus Lite 数据文件路径
+        description: 图片/视频说明文本，缺省用文件名
+        db: 可选，复用的 MilvusLite 实例（批量模式避免重复打开同一数据文件）
+    """
+    is_url = file_arg.lower().startswith(("http://", "https://"))
+    ext = os.path.splitext(file_arg)[1].lower()
+
+    # 图片：本地文件，一条记录，不切片
+    if not is_url and ext in _IMAGE_EXTS:
+        doc_name = os.path.basename(file_arg)
+        description = description or doc_name
+        vector = embed_image(file_arg)
+        build_media(
+            vector, description, doc_name, db_path,
+            visibility, dept_id, owner_user_id, "img",
+            file_type=ext.lstrip("."), db=db,
+        )
+        return
+
+    # 视频：仅公网 URL，一条记录，不切片
+    if is_url and ext in _VIDEO_EXTS:
+        description = description or os.path.basename(file_arg)
+        vector = embed_video(file_arg)
+        build_media(
+            vector, description, file_arg, db_path,
+            visibility, dept_id, owner_user_id, "vid",
+            file_type="video", db=db,
+        )
+        return
+
+    # PDF 有真实分页，按页码定位；docx/txt 无固定分页，按切片序号定位
+    use_page = ext == ".pdf"
+    if ext == ".pdf":
+        pdf_reader = PdfReader(file_arg)
+        text, char_page_mapping = extract_text_from_pdf(pdf_reader)
+    elif ext == ".docx":
+        text, char_page_mapping = extract_text_from_docx(file_arg)
+    elif ext == ".txt":
+        text, char_page_mapping = extract_text_from_txt(file_arg)
+    elif ext == ".doc":
+        raise SystemExit(f"暂不支持的文件类型: {ext}，需要先手动另存为 .docx 再入库")
+    else:
+        raise SystemExit(
+            f"暂不支持的文件类型: {ext}（支持 .pdf/.docx/.txt，"
+            "图片 .jpg/.jpeg/.png/.bmp，视频以 http(s) URL 传入）"
+        )
+    print(f"提取的文本长度: {len(text)} 个字符。")
+
+    doc_name = os.path.basename(file_arg)
+    process_text_with_splitter(
+        text,
+        char_page_mapping,
+        doc_name,
+        db_path,
+        visibility,
+        dept_id,
+        owner_user_id,
+        file_type=ext.lstrip("."),
+        use_page=use_page,
+        db=db,
+    )
+
+
+def _resolve_visibility(rel_path: str) -> Tuple[str, str | None, str | None]:
+    """按目录约定从相对路径推断权限标记。
+
+    目录约定（相对 --dir 根目录）：
+        dept/<dept_id>/...      -> ("dept", <dept_id>, None)
+        private/<user_id>/...   -> ("private", None, <user_id>)
+        根目录及其他目录下的文件  -> ("public", None, None)
+    dept/private 一级目录下缺少 ID 子目录时抛 ValueError，
+    避免把本应是部门/个人文档的文件误标为 public 造成越权可见。
+    """
+    parts = rel_path.replace(os.sep, "/").split("/")
+    if parts[0] == "dept":
+        if len(parts) < 3:
+            raise ValueError(f"目录结构不符合约定：{rel_path}（应为 dept/<dept_id>/<文件>）")
+        return "dept", parts[1], None
+    if parts[0] == "private":
+        if len(parts) < 3:
+            raise ValueError(f"目录结构不符合约定：{rel_path}（应为 private/<user_id>/<文件>）")
+        return "private", None, parts[1]
+    return "public", None, None
+
+
+def process_directory(dir_path: str, db_path: str) -> None:
+    """按目录约定批量入库：遍历 --dir 下所有支持的文件，按所在目录打权限标。
+
+    单个文件失败（如嵌入接口报错、目录结构不符约定）不中断整批，
+    结束时打印成功/失败/跳过汇总。SystemExit 类环境错误
+    （如未安装 Word、嵌入后端不支持图片）对所有同类文件必然重复发生，
+    直接中止整批，不逐个重试。
+    """
+    from app.core.config import get_settings
+    from app.infra.vectordb.milvus_lite import MilvusLite
+
+    settings = get_settings()
+    # 整批复用同一实例：避免为每个文件重复打开同一个 Milvus Lite 数据文件
+    db = MilvusLite(
+        db_path=db_path,
+        collection_name=settings.milvus_collection,
+        dim=settings.embedding_dim,
+    )
+
+    successes: list[str] = []
+    failures: list[tuple[str, str]] = []
+    skipped: list[str] = []
+
+    for root, _dirs, files in os.walk(dir_path):
+        for name in sorted(files):
+            file_path = os.path.join(root, name)
+            rel = os.path.relpath(file_path, dir_path)
+            if os.path.splitext(name)[1].lower() not in _BATCH_EXTS:
+                skipped.append(rel)
+                continue
+            try:
+                visibility, dept_id, owner_user_id = _resolve_visibility(rel)
+                print(
+                    f"\n>>> 入库 {rel}"
+                    f"（visibility={visibility}"
+                    + (f"，dept_id={dept_id}" if dept_id else "")
+                    + (f"，owner_user_id={owner_user_id}" if owner_user_id else "")
+                    + "）"
+                )
+                process_file(file_path, visibility, dept_id, owner_user_id, db_path, db=db)
+            except Exception as exc:
+                failures.append((rel, str(exc)))
+                print(f"入库失败：{rel} -> {exc}")
+                continue
+            successes.append(rel)
+
+    print("\n========== 批量入库汇总 ==========")
+    print(f"成功 {len(successes)} 个，失败 {len(failures)} 个，跳过（不支持格式）{len(skipped)} 个")
+    for rel, err in failures:
+        print(f"  失败：{rel} -> {err}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="创建 Milvus Lite 知识库")
     parser.add_argument(
         "file",
-        help="文档路径（.pdf/.docx/.doc/.txt）或图片路径（.jpg/.jpeg/.png/.bmp），视频传 http(s) URL",
+        nargs="?",
+        help="文档路径（.pdf/.docx/.txt）或图片路径（.jpg/.jpeg/.png/.bmp），视频传 http(s) URL",
+    )
+    parser.add_argument(
+        "--dir",
+        dest="dir_path",
+        default=None,
+        help="批量入库根目录：public/ 为公共，dept/<dept_id>/ 为部门，private/<user_id>/ 为个人",
     )
     parser.add_argument("--visibility", default="public", choices=["public", "dept", "private"])
     parser.add_argument("--dept-id", default=None, help="visibility=dept 时必填")
@@ -453,68 +591,44 @@ def main() -> None:
     parser.add_argument("--description", default=None, help="图片/视频的说明文本，缺省用文件名")
     args = parser.parse_args()
 
-    if args.visibility == "dept" and not args.dept_id:
-        raise SystemExit("visibility=dept 时必须提供 --dept-id")
-    if args.visibility == "private" and not args.owner_user_id:
-        raise SystemExit("visibility=private 时必须提供 --owner-user-id")
-
     # 延迟导入配置，确保存在 .env 时能正确读取嵌入配置
     from app.core.config import get_settings
 
     settings = get_settings()
     db_path = args.db_path or settings.milvus_db_path
 
-    is_url = args.file.lower().startswith(("http://", "https://"))
-    ext = os.path.splitext(args.file)[1].lower()
-
-    # 图片：本地文件，一条记录，不切片
-    if not is_url and ext in _IMAGE_EXTS:
-        doc_name = os.path.basename(args.file)
-        description = args.description or doc_name
-        vector = embed_image(args.file)
-        build_media(
-            vector, description, doc_name, db_path,
-            args.visibility, args.dept_id, args.owner_user_id, "img",
-        )
+    # 批量模式：权限标记由目录结构决定，单文件专属参数不适用
+    if args.dir_path:
+        if (
+            args.file
+            or args.visibility != "public"
+            or args.dept_id
+            or args.owner_user_id
+            or args.description
+        ):
+            raise SystemExit(
+                "--dir 批量模式下不接受位置参数及 "
+                "--visibility/--dept-id/--owner-user-id/--description"
+            )
+        process_directory(args.dir_path, db_path)
         print(f"\n知识库构建完成，数据文件: {db_path}")
         return
 
-    # 视频：仅公网 URL，一条记录，不切片
-    if is_url and ext in _VIDEO_EXTS:
-        description = args.description or os.path.basename(args.file)
-        vector = embed_video(args.file)
-        build_media(
-            vector, description, args.file, db_path,
-            args.visibility, args.dept_id, args.owner_user_id, "vid",
-        )
-        print(f"\n知识库构建完成，数据文件: {db_path}")
-        return
+    if not args.file:
+        raise SystemExit("必须提供文档路径，或使用 --dir 指定批量入库目录")
 
-    if ext == ".pdf":
-        pdf_reader = PdfReader(args.file)
-        text, char_page_mapping = extract_text_from_pdf(pdf_reader)
-    elif ext == ".docx":
-        text, char_page_mapping = extract_text_from_docx(args.file)
-    elif ext == ".doc":
-        text, char_page_mapping = extract_text_from_doc(args.file)
-    elif ext == ".txt":
-        text, char_page_mapping = extract_text_from_txt(args.file)
-    else:
-        raise SystemExit(
-            f"暂不支持的文件类型: {ext}（支持 .pdf/.docx/.doc/.txt，"
-            "图片 .jpg/.jpeg/.png/.bmp，视频以 http(s) URL 传入）"
-        )
-    print(f"提取的文本长度: {len(text)} 个字符。")
+    if args.visibility == "dept" and not args.dept_id:
+        raise SystemExit("visibility=dept 时必须提供 --dept-id")
+    if args.visibility == "private" and not args.owner_user_id:
+        raise SystemExit("visibility=private 时必须提供 --owner-user-id")
 
-    doc_name = os.path.basename(args.file)
-    process_text_with_splitter(
-        text,
-        char_page_mapping,
-        doc_name,
-        db_path,
+    process_file(
+        args.file,
         args.visibility,
         args.dept_id,
         args.owner_user_id,
+        db_path,
+        description=args.description,
     )
     print(f"\n知识库构建完成，数据文件: {db_path}")
 

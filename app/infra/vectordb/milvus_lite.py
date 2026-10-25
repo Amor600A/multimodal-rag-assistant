@@ -33,6 +33,8 @@ _SCALAR_FIELDS = (
     ("owner_user_id", 64),
     ("dept_id", 64),
     ("source", 512),
+    # 来源文件类型（pdf/docx/txt/png/jpg/video），便于按类型区分与过滤
+    ("file_type", 16),
 )
 
 # 检索时需要回填的输出字段
@@ -62,6 +64,7 @@ class MilvusLite:
     def _ensure_collection(self) -> None:
         """幂等建 collection：字段固定，不开启动态字段。"""
         if self._client.has_collection(self._collection):
+            self._check_schema()
             return
 
         schema = self._client.create_schema(auto_id=False)
@@ -72,6 +75,21 @@ class MilvusLite:
 
         self._client.create_collection(self._collection, schema=schema)
         logger.info("MilvusLite 已创建 collection：%s", self._collection)
+
+    def _check_schema(self) -> None:
+        """校验已存在 collection 的标量字段与当前定义一致。
+
+        旧版本建出的 collection 缺少 file_type 字段，直接读写会报字段不存在，
+        这里提前给出明确提示，避免用户面对晦涩的 Milvus 报错。
+        """
+        info = self._client.describe_collection(self._collection)
+        existing = {field["name"] for field in info.get("fields", [])}
+        missing = [name for name, _ in _SCALAR_FIELDS if name not in existing]
+        if missing:
+            raise RuntimeError(
+                f"collection {self._collection} 缺少字段 {missing}："
+                "当前 schema 已升级，请删除数据文件后重新建库"
+            )
 
     def insert(self, records: list[dict]) -> None:
         """批量写入向量记录（同 id 覆盖，幂等）。
@@ -98,6 +116,7 @@ class MilvusLite:
                 "owner_user_id": r.get("owner_user_id") or "",
                 "dept_id": r.get("dept_id") or "",
                 "source": r.get("source", "manual"),
+                "file_type": r.get("file_type") or "",
             })
 
         if not rows:

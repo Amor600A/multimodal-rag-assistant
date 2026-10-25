@@ -28,11 +28,9 @@ milvus-lite>=3.2.0,<4.0
 pyarrow>=15,<18
 numpy>=1.26.0,<2.0
 
-# 知识库建库脚本（PDF / DOCX / DOC / TXT 文本提取）
+# 知识库建库脚本（PDF / DOCX / TXT 文本提取）
 pypdf>=5.0,<6.0
 python-docx>=1.1.0,<2.0
-# .doc（Word 97-2003）经 Word COM 转 .docx，需要 pywin32（仅 Windows）
-pywin32>=306; sys_platform == "win32"
 # DashScope 原生 SDK：多模态嵌入 multimodal-embedding-v1（文本/图片/视频同空间）
 dashscope>=1.20,<2.0
 

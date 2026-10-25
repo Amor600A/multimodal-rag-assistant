@@ -40,6 +40,7 @@ class RetrievedChunk:
     source: str
     scope: str
     score: float
+    file_type: str = ""   # 来源文件类型（pdf/docx/txt/png/video）
 
 
 class RAGService:
@@ -120,6 +121,7 @@ class RAGService:
                 source=rec.get("source", "manual"),
                 scope=rec.get("scope", "domain"),
                 score=rec.get("score", 0.0),
+                file_type=rec.get("file_type", ""),
             ))
             if len(chunks) >= limit:
                 break

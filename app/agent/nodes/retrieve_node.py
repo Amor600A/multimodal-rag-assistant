@@ -45,6 +45,7 @@ async def retrieve_node(state: AgentState) -> dict:
             "source": c.source,
             "scope": c.scope,
             "score": c.score,
+            "file_type": c.file_type,
         }
         for c in chunks
     ]
