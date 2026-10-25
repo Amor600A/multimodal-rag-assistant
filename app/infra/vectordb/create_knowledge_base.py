@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """创建 Milvus Lite 知识库脚本。
 
-流程：读取 PDF/DOCX -> 提取文本+页码 -> 切片 -> 嵌入 -> 写入 Milvus Lite。
+流程：读取 PDF/DOCX/TXT -> 提取文本 -> 切片 -> 嵌入 -> 写入 Milvus Lite；
+图片/视频不切片，直接多模态嵌入写单条记录。
 数据文件默认落在 data/milvus/rag_knowledge.db（由配置 MILVUS_DB_PATH 决定）。
 
 支持格式：
@@ -40,8 +41,10 @@
         dept/<dept_id>/...      -> visibility=dept，dept_id 取自目录名
         private/<user_id>/...   -> visibility=private，owner_user_id 取自目录名
         根目录及其他目录下的文件  -> visibility=public
-    批量模式仅扫描本地文件（.pdf/.docx/.txt/图片），视频 URL 仍按单文件方式传入；
-    单文件失败不中断整批，结束打印成功/失败/跳过汇总。
+        各目录下 videos.txt     -> 视频清单（VIDEO_KNOWLEDGE = [{"url":..., "description":...}]），
+                                   权限同所在目录
+    批量模式扫描本地文件（.pdf/.docx/.txt/图片）与各目录的 videos.txt 清单；
+    单文件/单条 URL 失败不中断整批，结束打印成功/失败/跳过汇总。
 
 注意：Milvus Lite 为单文件独占，运行本脚本前请先停止后端服务，避免文件被占用。
       .txt 需为 UTF-8 或 GBK 编码。
@@ -50,16 +53,27 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import os
+import re
 from typing import List, Tuple
-
 from pypdf import PdfReader
+
+from app.core.config import get_settings
+from app.infra.vectordb.milvus_lite import MilvusLite
 
 # 图片格式：本地文件，走 Base64 上传
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 # 视频格式：仅支持公网 URL
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".webm"}
+
+# 批量入库支持的本地文件类型；视频以各目录 videos.txt 清单中的公网 URL 参与，不走文件扫描
+_BATCH_EXTS = {".pdf", ".docx", ".txt"} | _IMAGE_EXTS
+
+# 权限标量白名单：与权限表达式构造的校验规则一致（仅字母/数字/下划线/中划线），
+# dept_id/owner_user_id 在入库时 fail-fast，避免写入后检索期才暴露
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 默认切片参数（与参考脚本保持一致）
 CHUNK_SIZE = 500
@@ -96,7 +110,8 @@ def extract_text_from_docx(docx_path: str) -> Tuple[str, List[int]]:
     """从 DOCX 提取文本。
 
     DOCX 没有固定分页（分页由渲染时决定），无法逐页定位，
-    因此页码统一记为 1，source 溯源表现为 文件名#p1。
+    因此页码占位统一记为 1；source 定位不使用页码，
+    由 build_text_chunks 以切片序号记为 文件名#c块序号。
 
     提取范围：正文段落 + 表格单元格文本（攻略/政策类文档常用表格排版）。
 
@@ -158,7 +173,7 @@ def extract_text_from_txt(txt_path: str) -> Tuple[str, List[int]]:
 
 def _media_embedder():
     """取出多模态嵌入器；图片/视频入库必须使用统一多模态空间。"""
-    from app.core.config import get_settings
+    # 嵌入器保持延迟导入：只有处理图片/视频时才需要加载 dashscope 依赖
     from app.rag.embedder import MultimodalEmbedder, get_embedder
 
     embedder = get_embedder()
@@ -269,9 +284,6 @@ def _write_records(records: List[dict], save_path: str, summary: str, db=None):
     返回:
         已写入的 MilvusLite 实例
     """
-    from app.core.config import get_settings
-    from app.infra.vectordb.milvus_lite import MilvusLite
-
     settings = get_settings()
     if db is None:
         db = MilvusLite(
@@ -413,11 +425,6 @@ def process_text_with_splitter(
         db=db,
     )
 
-
-# 批量入库支持的本地文件类型（视频仅支持公网 URL，不参与目录扫描）
-_BATCH_EXTS = {".pdf", ".docx", ".txt"} | _IMAGE_EXTS
-
-
 def process_file(
     file_arg: str,
     visibility: str,
@@ -439,7 +446,18 @@ def process_file(
         db: 可选，复用的 MilvusLite 实例（批量模式避免重复打开同一数据文件）
     """
     is_url = file_arg.lower().startswith(("http://", "https://"))
-    ext = os.path.splitext(file_arg)[1].lower()
+    # URL 可能带查询串/签名参数（?token=...），先截断再取扩展名，否则匹配不上视频格式
+    path_part = file_arg.split("?", 1)[0].split("#", 1)[0] if is_url else file_arg
+    ext = os.path.splitext(path_part)[1].lower()
+
+    # 权限标量入库前做白名单校验：dept_id/owner_user_id 最终要进检索期的权限表达式，
+    # 与 expr 构造的白名单规则（_ID_RE）保持一致，非法值在此 fail-fast
+    for label, value in (("dept_id", dept_id), ("owner_user_id", owner_user_id)):
+        if value is not None and not _ID_RE.fullmatch(value):
+            raise ValueError(f"{label} 含非法字符: {value}（仅允许字母、数字、下划线、中划线）")
+
+    if not is_url and not os.path.isfile(file_arg):
+        raise SystemExit(f"文件不存在: {file_arg}")
 
     # 图片：本地文件，一条记录，不切片
     if not is_url and ext in _IMAGE_EXTS:
@@ -455,7 +473,7 @@ def process_file(
 
     # 视频：仅公网 URL，一条记录，不切片
     if is_url and ext in _VIDEO_EXTS:
-        description = description or os.path.basename(file_arg)
+        description = description or os.path.basename(path_part)
         vector = embed_video(file_arg)
         build_media(
             vector, description, file_arg, db_path,
@@ -481,6 +499,9 @@ def process_file(
             "图片 .jpg/.jpeg/.png/.bmp，视频以 http(s) URL 传入）"
         )
     print(f"提取的文本长度: {len(text)} 个字符。")
+    if not text.strip():
+        # 扫描件/图片型文档没有文字层；抛 ValueError 让批量模式按单文件失败处理，不中断整批
+        raise ValueError(f"未提取到文本内容：{file_arg}（扫描件需先 OCR 再入库）")
 
     doc_name = os.path.basename(file_arg)
     process_text_with_splitter(
@@ -495,7 +516,6 @@ def process_file(
         use_page=use_page,
         db=db,
     )
-
 
 def _resolve_visibility(rel_path: str) -> Tuple[str, str | None, str | None]:
     """按目录约定从相对路径推断权限标记。
@@ -518,17 +538,91 @@ def _resolve_visibility(rel_path: str) -> Tuple[str, str | None, str | None]:
         return "private", None, parts[1]
     return "public", None, None
 
+def _scope_tag(visibility: str, dept_id: str | None, owner_user_id: str | None) -> str:
+    """拼权限标记的日志片段，如 "visibility=dept，dept_id=mkt-dept-001"。"""
+    tag = f"visibility={visibility}"
+    if dept_id:
+        tag += f"，dept_id={dept_id}"
+    if owner_user_id:
+        tag += f"，owner_user_id={owner_user_id}"
+    return tag
+
+def _parse_video_manifest(text: str) -> List[dict]:
+    """把 videos.txt 内容解析为视频条目列表。
+
+    清单格式为 Python 字面量（与 VIDEO_KNOWLEDGE 的写法一致）：
+        VIDEO_KNOWLEDGE = [
+            {"url": "https://...", "description": "可选说明"},
+        ]
+    用 ast.literal_eval 而非 eval，只允许字面量、不执行任意代码。
+    """
+    # 跳过变量名与等号，只取 [...] 列表部分
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end < start:
+        raise ValueError("videos.txt 格式错误：未找到 [...] 条目列表")
+    try:
+        entries = ast.literal_eval(text[start:end + 1])
+    except (ValueError, SyntaxError) as exc:
+        raise ValueError(f"videos.txt 解析失败：{exc}") from exc
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        raise ValueError("videos.txt 格式错误：条目列表应为 [ {\"url\": ...}, ... ]")
+    return entries
+
+
+def _process_video_manifest(
+    manifest_path: str, rel: str, db_path: str, db
+) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """处理 videos.txt 视频清单，URL 继承清单所在目录的权限标记。
+
+    单条格式错误（缺 url、非 http(s) URL、非支持的视频扩展名）预先拦截记为失败，
+    避免传入 process_file 变成 SystemExit 中止整批。
+    返回 (成功条目, 失败条目)，格式与 process_directory 的汇总列表一致。
+    """
+    try:
+        visibility, dept_id, owner_user_id = _resolve_visibility(rel)
+        text, _page = extract_text_from_txt(manifest_path)
+        entries = _parse_video_manifest(text)
+    except (ValueError, OSError) as exc:
+        # 清单本身不可用时，其中所有 URL 都无法打标/读取，整体记一条失败
+        return [], [(rel, str(exc))]
+
+    successes: list[str] = []
+    failures: list[tuple[str, str]] = []
+    for idx, entry in enumerate(entries, start=1):
+        url = str(entry.get("url", "")).strip()
+        desc = entry.get("description")
+        description = str(desc).strip() if desc else None
+        item = f"{rel} 第{idx}条 {url or entry}"
+        # URL 可能带查询串/签名参数，先截断再取扩展名（与 process_file 规则一致）
+        path_part = url.split("?", 1)[0].split("#", 1)[0]
+        ext = os.path.splitext(path_part)[1].lower()
+        if not url.lower().startswith(("http://", "https://")) or ext not in _VIDEO_EXTS:
+            failures.append((f"{rel} 第{idx}条", f"不是支持的视频 URL：{url or entry}"))
+            continue
+        try:
+            print(f"\n>>> 入库视频 {item}（{_scope_tag(visibility, dept_id, owner_user_id)}）")
+            process_file(url, visibility, dept_id, owner_user_id, db_path,
+                         description=description, db=db)
+        except Exception as exc:
+            failures.append((item, str(exc)))
+            print(f"入库失败：{item} -> {exc}")
+            continue
+        successes.append(item)
+    return successes, failures
 
 def process_directory(dir_path: str, db_path: str) -> None:
     """按目录约定批量入库：遍历 --dir 下所有支持的文件，按所在目录打权限标。
 
-    单个文件失败（如嵌入接口报错、目录结构不符约定）不中断整批，
-    结束时打印成功/失败/跳过汇总。SystemExit 类环境错误
-    （如未安装 Word、嵌入后端不支持图片）对所有同类文件必然重复发生，
+    目录下的 videos.txt 视为视频 URL 清单逐行入库（不作为普通文本参与切片），
+    URL 继承所在目录的权限标记。单个文件/单条 URL 失败（如嵌入接口报错、
+    目录结构不符约定）不中断整批，结束时打印成功/失败/跳过汇总。
+    SystemExit 类环境错误（如嵌入后端不支持图片/视频）对所有同类文件必然重复发生，
     直接中止整批，不逐个重试。
     """
-    from app.core.config import get_settings
-    from app.infra.vectordb.milvus_lite import MilvusLite
+    if not os.path.isdir(dir_path):
+        # 提前检查：避免静默产出"成功 0 个"，也避免为不存在的目录创建空数据文件
+        raise SystemExit(f"批量入库目录不存在: {dir_path}")
 
     settings = get_settings()
     # 整批复用同一实例：避免为每个文件重复打开同一个 Milvus Lite 数据文件
@@ -546,18 +640,18 @@ def process_directory(dir_path: str, db_path: str) -> None:
         for name in sorted(files):
             file_path = os.path.join(root, name)
             rel = os.path.relpath(file_path, dir_path)
+            # videos.txt 是视频 URL 清单，不作为普通文本入库，单独逐行处理
+            if name.lower() == "videos.txt":
+                ok_items, err_items = _process_video_manifest(file_path, rel, db_path, db)
+                successes.extend(ok_items)
+                failures.extend(err_items)
+                continue
             if os.path.splitext(name)[1].lower() not in _BATCH_EXTS:
                 skipped.append(rel)
                 continue
             try:
                 visibility, dept_id, owner_user_id = _resolve_visibility(rel)
-                print(
-                    f"\n>>> 入库 {rel}"
-                    f"（visibility={visibility}"
-                    + (f"，dept_id={dept_id}" if dept_id else "")
-                    + (f"，owner_user_id={owner_user_id}" if owner_user_id else "")
-                    + "）"
-                )
+                print(f"\n>>> 入库 {rel}（{_scope_tag(visibility, dept_id, owner_user_id)}）")
                 process_file(file_path, visibility, dept_id, owner_user_id, db_path, db=db)
             except Exception as exc:
                 failures.append((rel, str(exc)))
@@ -569,7 +663,6 @@ def process_directory(dir_path: str, db_path: str) -> None:
     print(f"成功 {len(successes)} 个，失败 {len(failures)} 个，跳过（不支持格式）{len(skipped)} 个")
     for rel, err in failures:
         print(f"  失败：{rel} -> {err}")
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="创建 Milvus Lite 知识库")
@@ -591,9 +684,6 @@ def main() -> None:
     parser.add_argument("--description", default=None, help="图片/视频的说明文本，缺省用文件名")
     args = parser.parse_args()
 
-    # 延迟导入配置，确保存在 .env 时能正确读取嵌入配置
-    from app.core.config import get_settings
-
     settings = get_settings()
     db_path = args.db_path or settings.milvus_db_path
 
@@ -611,27 +701,22 @@ def main() -> None:
                 "--visibility/--dept-id/--owner-user-id/--description"
             )
         process_directory(args.dir_path, db_path)
-        print(f"\n知识库构建完成，数据文件: {db_path}")
-        return
-
-    if not args.file:
-        raise SystemExit("必须提供文档路径，或使用 --dir 指定批量入库目录")
-
-    if args.visibility == "dept" and not args.dept_id:
-        raise SystemExit("visibility=dept 时必须提供 --dept-id")
-    if args.visibility == "private" and not args.owner_user_id:
-        raise SystemExit("visibility=private 时必须提供 --owner-user-id")
-
-    process_file(
-        args.file,
-        args.visibility,
-        args.dept_id,
-        args.owner_user_id,
-        db_path,
-        description=args.description,
-    )
+    else:
+        if not args.file:
+            raise SystemExit("必须提供文档路径，或使用 --dir 指定批量入库目录")
+        if args.visibility == "dept" and not args.dept_id:
+            raise SystemExit("visibility=dept 时必须提供 --dept-id")
+        if args.visibility == "private" and not args.owner_user_id:
+            raise SystemExit("visibility=private 时必须提供 --owner-user-id")
+        process_file(
+            args.file,
+            args.visibility,
+            args.dept_id,
+            args.owner_user_id,
+            db_path,
+            description=args.description,
+        )
     print(f"\n知识库构建完成，数据文件: {db_path}")
-
 
 if __name__ == "__main__":
     main()

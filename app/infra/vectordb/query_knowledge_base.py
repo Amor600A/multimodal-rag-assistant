@@ -67,8 +67,17 @@ def main() -> None:
     parser.add_argument("--user-id", default=None, help="按该用户身份做权限过滤")
     parser.add_argument("--dept-id", default=None, help="该用户所属部门")
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="置信度过滤阈值（0~1 的 COSINE 相似度，如 0.6），低于该值的召回不展示",
+    )
     parser.add_argument("--db-path", default=None, help="覆盖 MILVUS_DB_PATH")
     args = parser.parse_args()
+
+    if args.min_score is not None and not 0 <= args.min_score <= 1:
+        raise SystemExit("--min-score 取值范围为 0~1")
 
     from app.core.config import get_settings
 
@@ -82,6 +91,11 @@ def main() -> None:
 
     hits = kb.search(expr, args.query, limit=args.limit)
 
+    if args.min_score is not None:
+        before = len(hits)
+        hits = [h for h in hits if h["score"] >= args.min_score]
+        print(f"置信度过滤: score >= {args.min_score:.2f}，{before} 条召回保留 {len(hits)} 条\n")
+
     print("========== 检索到的文本块 ==========")
     for i, hit in enumerate(hits, start=1):
         print(
@@ -89,6 +103,8 @@ def main() -> None:
             f"类型: {hit['file_type'] or '-'}) ---"
         )
         print(f"可见性: {hit['visibility']}  归属部门: {hit['dept_id'] or '-'}")
+        # score 为 COSINE 相似度（-1~1，越大越相似），按百分比展示置信度
+        print(f"置信度: {hit['score'] * 100:.2f}%")
         print(f"内容:\n{hit['text']}")
     print("\n========== 检索到的文本块打印结束 ==========")
 
