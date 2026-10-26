@@ -35,7 +35,8 @@ async def retrieve_node(state: AgentState) -> dict:
     if vision_desc:
         query = f"{user_text} {vision_desc}"
 
-    chunks = get_rag_service().search(user, query, limit=5)
+    # 召回条数由配置 RECALL_TOP_N 控制，不在此处写死
+    chunks = get_rag_service().search(user, query)
     # 转成可序列化 dict 写入 state
     chunk_dicts = [
         {

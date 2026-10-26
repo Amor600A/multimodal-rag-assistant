@@ -12,7 +12,9 @@
 用法：
     python -m app.infra.vectordb.query_knowledge_base "请假流程是什么"
     python -m app.infra.vectordb.query_knowledge_base "竞品分析怎么做" --user-id alice --dept-id <部门ID>
-    python -m app.infra.vectordb.query_knowledge_base "考勤" --limit 5 --db-path data/milvus/rag_knowledge.db
+    python -m app.infra.vectordb.query_knowledge_base "考勤" --db-path data/milvus/rag_knowledge.db
+
+召回条数与是否精排均由配置控制（RECALL_TOP_N / RERANK_ENABLED / RERANK_INITIAL_TOP_N）。
 
 注意：Milvus Lite 为单文件独占，运行本脚本前请先停止后端服务，避免文件被占用。
 """
@@ -50,7 +52,7 @@ def build_expr(user_id: str | None, dept_id: str | None) -> str:
         return ""
 
     from app.core.deps import CurrentUser
-    from app.services.rag_service import RAGService
+    from app.services.rag_service import _build_permission_expr
 
     user = CurrentUser(
         user_id=user_id,
@@ -58,7 +60,7 @@ def build_expr(user_id: str | None, dept_id: str | None) -> str:
         role="user",
         dept_id=dept_id,
     )
-    return RAGService._build_permission_expr(user)
+    return _build_permission_expr(user)
 
 
 def main() -> None:
@@ -66,7 +68,6 @@ def main() -> None:
     parser.add_argument("query", help="查询问题")
     parser.add_argument("--user-id", default=None, help="按该用户身份做权限过滤")
     parser.add_argument("--dept-id", default=None, help="该用户所属部门")
-    parser.add_argument("--limit", type=int, default=5)
     parser.add_argument(
         "--min-score",
         type=float,
@@ -83,13 +84,37 @@ def main() -> None:
 
     settings = get_settings()
     db_path = args.db_path or settings.milvus_db_path
+    # 是否精排由配置 RERANK_ENABLED 统一控制，脚本不提供开关，与线上检索口径一致
+    rerank_on = settings.rerank_enabled
 
     kb = load_knowledge_base(db_path)
     expr = build_expr(args.user_id, args.dept_id)
     print(f"\n问题: {args.query}")
-    print(f"权限 expr: {expr or '（无过滤，查看全库）'}\n")
+    print(f"权限 expr: {expr or '（无过滤，查看全库）'}")
+    if rerank_on:
+        print(
+            f"Rerank: 启用（初检 top-{settings.rerank_initial_top_n} → "
+            f"精排取 top-{settings.recall_top_n}，model={settings.rerank_model}）"
+        )
+    print()
 
-    hits = kb.search(expr, args.query, limit=args.limit)
+    # 取数全部由配置控制：有重排先召回 RERANK_INITIAL_TOP_N，无重排直接召回 RECALL_TOP_N
+    initial_n = settings.rerank_initial_top_n if rerank_on else settings.recall_top_n
+    hits = kb.search(expr, args.query, limit=initial_n)
+
+    if rerank_on and hits:
+        # Rerank 精排：候选文本 → DashScope 重打分 → 按新分数排序取 top RECALL_TOP_N
+        from app.rag.reranker import rerank as _rerank
+
+        doc_texts = [h["text"] for h in hits]
+        rank_pairs = _rerank(args.query, doc_texts)
+        print(f"Rerank 精排: 候选 {len(hits)} → top {settings.recall_top_n}\n")
+        reranked_hits = []
+        for original_idx, rerank_score in rank_pairs[: settings.recall_top_n]:
+            h = hits[original_idx].copy()
+            h["score"] = rerank_score  # 替换为 rerank 分数
+            reranked_hits.append(h)
+        hits = reranked_hits
 
     if args.min_score is not None:
         before = len(hits)
@@ -103,13 +128,41 @@ def main() -> None:
             f"类型: {hit['file_type'] or '-'}) ---"
         )
         print(f"可见性: {hit['visibility']}  归属部门: {hit['dept_id'] or '-'}")
-        # score 为 COSINE 相似度（-1~1，越大越相似），按百分比展示置信度
-        print(f"置信度: {hit['score'] * 100:.2f}%")
+        # 向量检索的 score 是 COSINE 相似度；Rerank 后的 score 是 relevance_score
+        if rerank_on:
+            print(f"Rerank 分数: {hit['score']:.4f}")
+        else:
+            print(f"置信度: {hit['score'] * 100:.2f}%")
         print(f"内容:\n{hit['text']}")
     print("\n========== 检索到的文本块打印结束 ==========")
 
     if not hits:
         print("未命中任何记录，请检查权限过滤条件或先运行建库脚本。")
+        return
+
+    # ---- LLM 生成回答：走项目统一 LLM 工厂，与线上 generate 节点同一口径 ----
+    from app.rag.llm import get_llm
+
+    llm = get_llm()
+    if llm is None:
+        # mock 模式无真实 LLM，仅展示召回结果
+        print("\nLLM_BACKEND=mock，跳过生成回答（如需生成请设置 LLM_BACKEND=tongyi）")
+        return
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from app.agent.nodes.generate_node import _build_system_prompt
+
+    # 复用 generate 节点的 system prompt 组装逻辑（片段带短编号 [1][2]）
+    chunks = [
+        {"index": i, "source": h["source"], "file_type": h["file_type"], "text": h["text"]}
+        for i, h in enumerate(hits, start=1)
+    ]
+    system = SystemMessage(content=_build_system_prompt(chunks, ""))
+    print(f"\n========== LLM 生成回答（model={settings.llm_model}）==========")
+    resp = llm.invoke([system, HumanMessage(content=args.query)])
+    print(resp.content)
+    print("========== 生成回答打印结束 ==========")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import pytest
 
 from app.core.deps import CurrentUser
 from app.infra.vectordb.mock_milvus import ExprParseError, compile_expr
-from app.services.rag_service import RAGService
+from app.services.rag_service import _build_permission_expr
 
 
 def _rec(**kw) -> dict:
@@ -125,7 +125,7 @@ def test_expr_out_of_subset_raises(expr):
 def test_build_permission_expr_dept_user():
     """有部门普通用户：public + 本部门 + 本人 private 三路 or。"""
     user = CurrentUser(user_id="u-alice", username="alice", role="user", dept_id="d-hr")
-    expr = RAGService._build_permission_expr(user)
+    expr = _build_permission_expr(user)
 
     # 完整表达式快照（三路 or 合并）
     assert expr == (
@@ -146,7 +146,7 @@ def test_build_permission_expr_dept_user():
 def test_build_permission_expr_no_dept_user():
     """无部门用户：仅 public + 本人 private，不含 dept 分支。"""
     user = CurrentUser(user_id="u-admin", username="admin", role="admin", dept_id=None)
-    expr = RAGService._build_permission_expr(user)
+    expr = _build_permission_expr(user)
 
     # 完整表达式快照（无 dept 分支，仅两路 or）
     assert expr == (
@@ -169,7 +169,7 @@ def test_build_permission_expr_admin_has_no_dept_clause():
     """admin 即使带 dept_id 也应按「无部门」口径生成（admin 仅 public + 本人 private）。"""
     # admin 在种子数据中 dept_id 为空；此处再验证 dept_id 存在时仍不生成 dept 分支
     user = CurrentUser(user_id="u-admin", username="admin", role="admin", dept_id=None)
-    expr = RAGService._build_permission_expr(user)
+    expr = _build_permission_expr(user)
     assert "dept_id" not in expr
     # 解析器兼容
     compile_expr(expr)

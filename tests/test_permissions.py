@@ -46,9 +46,9 @@ def current_users(client, headers_alice, headers_bob, headers_admin) -> dict[str
     }
 
 
-def _recall_ids(user: CurrentUser, query: str, limit: int = 10) -> list[str]:
-    """执行一次检索并返回最终召回集合的 doc_id 列表。"""
-    chunks: list[RetrievedChunk] = get_rag_service().search(user, query, limit=limit)
+def _recall_ids(user: CurrentUser, query: str) -> list[str]:
+    """执行一次检索并返回最终召回集合的 doc_id 列表（召回条数由配置控制）。"""
+    chunks: list[RetrievedChunk] = get_rag_service().search(user, query)
     return [c.doc_id for c in chunks]
 
 
@@ -103,7 +103,7 @@ def test_alice_private_doc_visible_to_self_only(client, headers_alice, current_u
     assert doc_id in alice_ids, alice_ids
 
     # bob：无召回（且不应召回任何 personal 域文档）
-    bob_chunks = get_rag_service().search(current_users["bob"], keyword, limit=10)
+    bob_chunks = get_rag_service().search(current_users["bob"], keyword)
     bob_ids = [c.doc_id for c in bob_chunks]
     assert doc_id not in bob_ids, bob_ids
     assert all(c.scope != "personal" for c in bob_chunks), bob_ids

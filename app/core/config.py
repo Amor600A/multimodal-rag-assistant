@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     checkpointer_backend: str = "mock_redis"    # memory | mock_redis | redis | postgres
     store_backend: str = "mock_postgres"            # in_memory | mock_postgres | postgres
     vector_backend: str = "mock"                # mock | milvus_lite | milvus
-    llm_backend: str = "mock"                   # mock | openai_compatible
+    llm_backend: str = "mock"                   # mock | openai_compatible | tongyi
     embedding_backend: str = "hash"             # hash | api | dashscope_mm
     token_revocation_backend: str = "memory"    # memory | redis
 
@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # 统一多模态空间用 multimodal-embedding-v1；纯文本兼容模式可用 text-embedding-v1
     embedding_model: str = "multimodal-embedding-v1"
     embedding_dim: int = 1024            # 嵌入维度，须与向量库 collection 一致
+
+    # ---- 检索 / Rerank ----
+    recall_top_n: int = 5                # 最终召回条数（无重排时即召回条数，有重排时为精排后取数）
+    rerank_enabled: bool = True         # 是否启用 rerank 精排（True 时初检放宽到 rerank_initial_top_n 再精排）
+    rerank_model: str = "qwen3-rerank"
+    rerank_initial_top_n: int = 50       # 初检候选数（rerank_enabled=True 时生效）
 
     # ---- Agent ----
     agent_enabled_tools: str = ""        # 留空 = 纯 RAG 链路；启用：已注册工具名逗号分隔，如 retrieval,memory
@@ -76,7 +82,7 @@ class Settings(BaseSettings):
         "checkpointer_backend": {"memory", "mock_redis", "redis", "postgres"},
         "store_backend": {"in_memory", "mock_postgres", "postgres"},
         "vector_backend": {"mock", "milvus_lite", "milvus"},
-        "llm_backend": {"mock", "openai_compatible"},
+        "llm_backend": {"mock", "openai_compatible", "tongyi"},
         "embedding_backend": {"hash", "api", "dashscope_mm"},
         "token_revocation_backend": {"memory", "redis"},
         "memory_extractor": {"rule", "llm"},
@@ -98,6 +104,12 @@ class Settings(BaseSettings):
             for f in ("llm_base_url", "llm_api_key", "llm_model"):
                 if not getattr(self, f):
                     errors.append(f"LLM_BACKEND=openai_compatible 需要设置 {f.upper()}")
+        if self.llm_backend == "tongyi":
+            # ChatTongyi 复用 embedding_api_key 作为 DashScope 访问密钥
+            if not self.embedding_api_key:
+                errors.append("LLM_BACKEND=tongyi 需要设置 DASHSCOPE_API_KEY（复用 EMBEDDING_API_KEY 字段）")
+            if not self.llm_model:
+                errors.append("LLM_BACKEND=tongyi 需要设置 LLM_MODEL（如 deepseek-v3）")
         if self.embedding_backend == "api":
             for f in ("embedding_api_base", "embedding_api_key", "embedding_model"):
                 if not getattr(self, f):

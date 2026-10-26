@@ -10,6 +10,7 @@ sse-starlette>=2.1.0,<3.0
 # LangGraph 生态（升级 minor 视为独立任务：改约束 -> pytest 全量通过才合入）
 langgraph>=0.2.50,<0.3
 langchain-core>=0.3.20,<0.4
+langchain-community>=0.3,<0.4
 
 # LLM 接入（OpenAI 兼容接口，通义/DeepSeek/自建均可）
 openai>=1.55.0,<2.0

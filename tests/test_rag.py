@@ -29,9 +29,9 @@ def _current_user(client, headers) -> CurrentUser:
     )
 
 
-def _hit_ids(user: CurrentUser, query: str, limit: int = 5) -> set[str]:
-    """检索并返回命中的 doc_id 集合。"""
-    return {c.doc_id for c in get_rag_service().search(user, query, limit=limit)}
+def _hit_ids(user: CurrentUser, query: str) -> set[str]:
+    """检索并返回命中的 doc_id 集合（召回条数由配置 RECALL_TOP_N 控制）。"""
+    return {c.doc_id for c in get_rag_service().search(user, query)}
 
 
 # ---- 1. 入库 -> 检索命中（词面重叠）----
