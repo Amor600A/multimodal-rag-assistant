@@ -85,18 +85,18 @@
   - 覆盖场景：纯文本查询文本、纯文本查询图片、纯文本查询视频、部门隔离查询、public 查询
   - 保存为 `data/eval_set.json`，后续所有调参以 recall@k 量化对比
 
-## R1. 查询脚本分模态过滤（立即见效）
+## R1. 查询脚本分模态过滤（已完成）
 
-- [ ] **R1-1** `query_knowledge_base.py` 新增 `--file-type` 参数，取值 `text | image | video` 或组合（如 `text,video`）
+- [x] **R1-1** `query_knowledge_base.py` 新增 `--file-type` 参数，取值 `pdf | docx | txt | png | video`（白名单校验防注入）
   - 按 `file_type` 字段预过滤后再查，媒体不再被文本切片挤掉
   - 与 `--min-score` 配合时，可对不同模态设不同阈值（媒体放宽到 0.2）
 
-## R2. Rerank 精排（业界标准）
+## R2. Rerank 精排（已完成）
 
-- [ ] **R2-1** 初检放宽到 top-50 → DashScope gte-rerank 重打分 → 取 top-5
+- [x] **R2-1** 初检放宽到 top-50 → DashScope qwen3-rerank 重打分 → 取 top-5
   - 召回率由初检保证，精确率由精排保证
-  - `rag_service.py` 双路召回返回后、写入 state 前接入
-  - 调试脚本 `query_knowledge_base.py` 同步支持 `--rerank` 开关
+  - 线上：`rag_service.py` 模块级 `rerank_candidates` 统一入口，线上与脚本共用
+  - 脚本：`query_knowledge_base.py` 直接 import 模块级函数，消除两份代码漂移
 
 ## R3. 混合检索（向量 + 关键词）
 
@@ -130,3 +130,60 @@
 **执行顺序**：R0 → R1 → R2 → R5 → R3 → R4 → R6
 
 **与真实后端切换的冲突点**：R3（混合检索）切到 standalone Milvus 后可考虑用 Milvus 自身的 hybrid search 能力替代自研 RRF；其余项在 Milvus Lite 阶段即可完成验证。
+
+---
+
+# 建库侧增强（临时任务，已完成）
+
+> 背景：本不在 R0-R6 召回率优化主线内，属于「看一眼代码顺手能改」的打磨项，
+> 代码已落地，pytest 59 项全绿（2026-10-26）。
+
+## K1. 切片参数命令行化
+
+- [x] **K1-1** `create_knowledge_base.py` 新增 `--chunk-size` / `--chunk-overlap` 参数
+  - 默认值保持常量 `CHUNK_SIZE=500` / `CHUNK_OVERLAP=100`，不传则行为与原来一致
+  - 单文件 / 批量模式都支持，全链路透传：main → process_directory / process_file → process_text_with_splitter → _split_with_offsets
+
+## K2. 调试输出收敛
+
+- [x] **K2-1** `compute_chunk_pages` 大 print（整个 chunk 列表 + 页码映射）改为 `--verbose` 开关
+  - 默认只打印「页码映射完成，共 N 个文本块」汇总；`--verbose` 才逐个打印完整文本
+- [x] **K2-2** 批量入库加进度条：预扫统计总项数，每项打印 `[idx/total] 入库 xxx`
+
+## K3. 嵌入器预取（纯工程简化）
+
+- [x] **K3-1** `process_directory` 在 `dashscope_mm` 模式下入口取一次 `_media_embedder()`，
+  透传给 `embed_image` / `embed_video` / `_process_video_manifest`，避免每个媒体文件重走 get_embedder() + 类型校验
+
+## K4. 空文本保护
+
+- [x] **K4-1** `_split_with_offsets` 开头加 `if not text.strip(): return []` 提前返回
+- [x] **K4-2** `process_text_with_splitter` 检测到空 chunks 打印「跳过入库」，不写库
+
+## K5. query 脚本对齐线上口径
+
+- [x] **K5-1** `query_knowledge_base.py` 接入 `_check_permission` 二次权限校验（与 `RAGService._initial_retrieve` 对齐）
+  - 有 `--user-id` 时生效，剔除越权记录后打印剔除条数；无 user_id（全库调试）时跳过
+- [x] **K5-2** `rerank_candidates` 从 `RAGService` 类 staticmethod 提升为模块级函数，
+  线上与脚本共用同一份实现，消除两份代码漂移
+- [x] **K5-3** 新增 `--file-type` 参数（pdf/docx/txt/png/video），白名单校验防注入，
+  拼入 expr 与权限过滤 and 组合
+
+## K6. 线上链路配套
+
+- [x] **K6-1** `rag_service.search` 的 `limit` 参数彻底移除，`recall_top_n` 统一由配置控制
+- [x] **K6-2** `search` / `_initial_retrieve` 变量名 `final_n` → `recall_target_n`，
+  后来 `_initial_retrieve` 内联到 `settings.recall_top_n`（消除冗余参数）
+- [x] **K6-3** `db.search` 三后端（mock_milvus / milvus_lite / 预留 milvus）统一加 `timeout: float | None = None`
+  参数，配置新增 `VECTOR_SEARCH_TIMEOUT=15.0`。当前 Mock/Lite 纯内存忽略，
+  切 standalone Milvus 时 pymilvus 有超时参数直接透传即可
+- [x] **K6-4** `generate_node` prompt 区分分数语义：rerank 关闭时告知「COSINE 相似度 0~1」，
+  开启时告知「Rerank relevance 0~5」；片段展示加 `分数=xx.xx`
+
+## K7. tongyi 模式 vision_node 修复
+
+- [x] **K7-1** tongyi 模式走 DashScope 原生 `multimodal-generation` 端点（而非 OpenAI 兼容端点）
+  - 根因：`qwen-vl-plus` 不在 DashScope OpenAI 兼容端点覆盖范围内，必须走原生端点
+  - 复用 `embedding_api_key` 作 DashScope 密钥
+  - openai_compatible 后端仍走 `AsyncOpenAI` Chat Completions
+  - 鉴权信息缺失时返回 mock 描述降级，不阻塞链路

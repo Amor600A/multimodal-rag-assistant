@@ -100,6 +100,31 @@ def _build_chunks(candidates: list[dict]) -> list[RetrievedChunk]:
     return chunks
 
 
+# ---- Rerank ----
+def rerank_candidates(query: str, candidates: list[dict], settings) -> list[dict]:
+    """Rerank 精排：调用 DashScope 重打分，按 relevance_score 降序返回。
+
+    原地替换 candidates[i]["score"] 为 rerank score，方便下游统一读取。
+    模块级函数（与 _build_permission_expr / _check_permission 同级），
+    线上 RAGService 和调试脚本共用同一份实现，避免两份代码漂移。
+    """
+    from app.rag.reranker import rerank as _rerank
+
+    doc_texts = [c["text"] for c in candidates]
+    rank_pairs = _rerank(query, doc_texts)
+    logger.info(
+        "Rerank 精排: 候选 %d → top %d (model=%s)",
+        len(candidates), len(candidates), settings.rerank_model,
+    )
+    # 按 rerank 分数重排，score 字段替换为 rerank score
+    reranked: list[dict] = []
+    for original_idx, rerank_score in rank_pairs:
+        rec = candidates[original_idx].copy()
+        rec["score"] = rerank_score
+        reranked.append(rec)
+    return reranked
+
+
 class RAGService:
     """RAG 服务单例。"""
 
@@ -117,29 +142,33 @@ class RAGService:
         """向量初筛 + 可选 Rerank 精排，统一入口。
 
         取数由配置统一控制：无重排直接召回 RECALL_TOP_N；
-        有重排先召回RERANK_INITIAL_TOP_N，精排后取 RECALL_TOP_N。
+        有重排先召回 RERANK_INITIAL_TOP_N，精排后取 RECALL_TOP_N。
         """
         from app.core.config import get_settings
 
         settings = get_settings()
-        final_n = settings.recall_top_n
-        candidates = self._initial_retrieve(user, query, final_n, settings)
+        recall_target_n = settings.recall_top_n
+        candidates = self._initial_retrieve(user, query, settings)
 
         if settings.rerank_enabled and candidates:
-            candidates = self._rerank_candidates(query, candidates, settings)
+            candidates = rerank_candidates(query, candidates, settings)
 
-        return _build_chunks(candidates[:final_n])
+        return _build_chunks(candidates[:recall_target_n])
 
     def _initial_retrieve(
-        self, user: CurrentUser, query: str, final_n: int, settings
+        self, user: CurrentUser, query: str, settings
     ) -> list[dict]:
         """向量初筛：权限 expr + 二次校验，返回 dict 候选列表。
 
-        有重排时初检放宽到 RERANK_INITIAL_TOP_N，无重排直接按最终召回数。
+        有重排时初检放宽到 RERANK_INITIAL_TOP_N，无重排直接按 RECALL_TOP_N。
         """
         expr = _build_permission_expr(user)
-        initial_top_n = settings.rerank_initial_top_n if settings.rerank_enabled else final_n
-        raw_results = self._db.search(expr, query, limit=initial_top_n)
+        initial_top_n = (
+            settings.rerank_initial_top_n if settings.rerank_enabled else settings.recall_top_n
+        )
+        raw_results = self._db.search(
+            expr, query, limit=initial_top_n, timeout=settings.vector_search_timeout,
+        )
 
         candidates: list[dict] = []
         for rec in raw_results:
@@ -151,28 +180,6 @@ class RAGService:
                 continue
             candidates.append(rec)
         return candidates
-
-    @staticmethod
-    def _rerank_candidates(query: str, candidates: list[dict], settings) -> list[dict]:
-        """Rerank 精排：DashScope qwen3-rerank 重打分，按 relevance_score 降序返回。
-
-        原地替换 candidates[i]["score"] 为 rerank score，方便下游统一读取。
-        """
-        from app.rag.reranker import rerank as _rerank
-
-        doc_texts = [c["text"] for c in candidates]
-        rank_pairs = _rerank(query, doc_texts)
-        logger.info(
-            "Rerank 精排: 候选 %d → top %d (model=%s)",
-            len(candidates), len(candidates), settings.rerank_model,
-        )
-        # 按 rerank 分数重排，score 字段替换为 rerank score
-        reranked: list[dict] = []
-        for original_idx, rerank_score in rank_pairs:
-            rec = candidates[original_idx].copy()
-            rec["score"] = rerank_score
-            reranked.append(rec)
-        return reranked
 
 
 _service: RAGService | None = None

@@ -75,6 +75,11 @@ def main() -> None:
         help="置信度过滤阈值（0~1 的 COSINE 相似度，如 0.6），低于该值的召回不展示",
     )
     parser.add_argument("--db-path", default=None, help="覆盖 MILVUS_DB_PATH")
+    parser.add_argument(
+        "--file-type",
+        default=None,
+        help="按来源类型过滤：pdf / docx / txt / png / video（白名单校验）",
+    )
     args = parser.parse_args()
 
     if args.min_score is not None and not 0 <= args.min_score <= 1:
@@ -89,6 +94,16 @@ def main() -> None:
 
     kb = load_knowledge_base(db_path)
     expr = build_expr(args.user_id, args.dept_id)
+
+    # file_type 过滤（白名单校验防注入，和 dept_id/owner_user_id 规则一致）
+    if args.file_type:
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", args.file_type):
+            raise SystemExit(f"--file-type 含非法字符: {args.file_type}（仅允许字母/数字/下划线/中划线）")
+        type_filter = f'file_type=="{args.file_type}"'
+        expr = f"({expr}) and {type_filter}" if expr else type_filter
+
     print(f"\n问题: {args.query}")
     print(f"权限 expr: {expr or '（无过滤，查看全库）'}")
     if rerank_on:
@@ -102,19 +117,29 @@ def main() -> None:
     initial_n = settings.rerank_initial_top_n if rerank_on else settings.recall_top_n
     hits = kb.search(expr, args.query, limit=initial_n)
 
-    if rerank_on and hits:
-        # Rerank 精排：候选文本 → DashScope 重打分 → 按新分数排序取 top RECALL_TOP_N
-        from app.rag.reranker import rerank as _rerank
+    # 二次权限校验（与线上 RAGService._initial_retrieve 对齐）：
+    # expr 出错时能兜底拦截越权记录；无 user_id 时跳过（脚本调试看全库的场景）
+    if args.user_id:
+        from app.core.deps import CurrentUser
+        from app.services.rag_service import _check_permission
 
-        doc_texts = [h["text"] for h in hits]
-        rank_pairs = _rerank(args.query, doc_texts)
+        script_user = CurrentUser(
+            user_id=args.user_id,
+            username=args.user_id,
+            role="user",
+            dept_id=args.dept_id,
+        )
+        before = len(hits)
+        hits = [h for h in hits if _check_permission(h, script_user)]
+        if len(hits) != before:
+            print(f"权限二次校验剔除 {before - len(hits)} 条越权记录，剩余 {len(hits)} 条")
+
+    if rerank_on and hits:
+        # Rerank 精排：调项目统一模块级函数（与线上 RAGService.search 同一份实现）
+        from app.services.rag_service import rerank_candidates
+
         print(f"Rerank 精排: 候选 {len(hits)} → top {settings.recall_top_n}\n")
-        reranked_hits = []
-        for original_idx, rerank_score in rank_pairs[: settings.recall_top_n]:
-            h = hits[original_idx].copy()
-            h["score"] = rerank_score  # 替换为 rerank 分数
-            reranked_hits.append(h)
-        hits = reranked_hits
+        hits = rerank_candidates(args.query, hits, settings)[: settings.recall_top_n]
 
     if args.min_score is not None:
         before = len(hits)

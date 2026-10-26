@@ -728,8 +728,8 @@ USER_DB_BACKEND=mock_postgres        # postgres
 CHECKPOINTER_BACKEND=memory          # mock_redis | redis | postgres
 STORE_BACKEND=in_memory              # mock_postgres | postgres
 VECTOR_BACKEND=mock                  # milvus
-LLM_BACKEND=mock                     # openai_compatible
-EMBEDDING_BACKEND=hash               # api
+LLM_BACKEND=mock                     # tongyi | openai_compatible
+EMBEDDING_BACKEND=hash               # api | dashscope_mm
 
 # ---- LLM / Embedding（mock 模式下全部可留空，不校验）----
 LLM_BASE_URL=                        # LLM_BACKEND=openai_compatible 时必填

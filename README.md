@@ -120,8 +120,11 @@ app/
 │   ├── org/  session/  images/   # 部门 / 会话元数据 / 图片元数据仓储
 │   ├── checkpointer/        # memory | mock_redis（磁盘快照，重启可回放）
 │   ├── store/               # 长期记忆（mock_postgres，namespace=(user_id,"memories")）
-│   └── vectordb/            # mock_milvus（numpy 余弦 + 有限 expr 子集解析器）
-├── rag/embedder.py          # hash 嵌入（sha256，重启不漂移）
+│   └── vectordb/            # mock_milvus（numpy 余弦 + 有限 expr 子集解析器）+ milvus_lite（本地 .db 文件）
+│                            # create_knowledge_base.py / query_knowledge_base.py（建库与检索调试脚本）
+├── rag/embedder.py          # hash 嵌入（sha256，重启不漂移）+ dashscope_mm（多模态统一 1024 维）
+├── rag/llm.py               # LLM 工厂：mock | tongyi | openai_compatible
+├── rag/reranker.py          # Rerank 精排：DashScope qwen3-rerank
 web/                         # 前端：index.html / app.js / style.css（textContent 渲染，禁 innerHTML）
 scripts/                     # create_db.sql（业务表DDL） seed_data.py（幂等种子） docker-compose.yml（依赖编排）
 tests/                       # pytest 59 用例：安全/expr/权限/RAG/SSE/会话图片
@@ -139,8 +142,8 @@ PROJECT_PLAN.md              # 完整设计方案  TODO.md 真实后端切换任
 | CHECKPOINTER_BACKEND | mock_redis | memory / redis / postgres（后两者未实现） |
 | STORE_BACKEND | mock_postgres | in_memory / postgres（未实现） |
 | VECTOR_BACKEND | mock | milvus_lite（已实现）/ milvus（未实现，见 TODO.md） |
-| LLM_BACKEND | mock | openai_compatible |
-| EMBEDDING_BACKEND | hash | api（DashScope text-embedding-v1） |
+| LLM_BACKEND | mock | tongyi（DashScope qwen-max/qwen-plus）/ openai_compatible |
+| EMBEDDING_BACKEND | hash | dashscope_mm（DashScope multimodal-embedding-v1 多模态统一空间）/ api |
 
 规则：
 

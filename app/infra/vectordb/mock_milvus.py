@@ -148,13 +148,16 @@ class MockMilvus:
             )
             self._records[r["id"]] = rec
 
-    def search(self, expr: str, query: str | np.ndarray, limit: int = 10) -> list[dict]:
+    def search(
+        self, expr: str, query: str | np.ndarray, limit: int = 10, timeout: float | None = None
+    ) -> list[dict]:
         """expr 过滤 + 余弦相似度排序。
 
         Args:
             expr: 权限过滤表达式（方案 6.3 子集）
             query: 查询文本或向量
             limit: 返回条数
+            timeout: 超时秒数（当前 Mock 纯内存计算忽略；Milvus standalone 阶段透传 pymilvus）
 
         Returns:
             按相似度降序的记录 dict 列表（含 score 字段）

@@ -125,10 +125,13 @@ class MilvusLite:
         self._client.upsert(self._collection, rows)
         self._client.flush(self._collection)
 
-    def search(self, expr: str, query: str | np.ndarray, limit: int = 10) -> list[dict]:
+    def search(
+        self, expr: str, query: str | np.ndarray, limit: int = 10, timeout: float | None = None
+    ) -> list[dict]:
         """expr 过滤 + COSINE 相似度排序。
 
         expr 直接交给 Milvus 标量过滤，语法与 MockMilvus 解析器支持的子集一致。
+        timeout 预留接口：当前 Milvus Lite 本地单文件忽略；Milvus standalone 阶段透传 pymilvus。
         """
         if isinstance(query, str):
             qvec = self._embedder.embed(query)

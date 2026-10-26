@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     rerank_enabled: bool = True         # 是否启用 rerank 精排（True 时初检放宽到 rerank_initial_top_n 再精排）
     rerank_model: str = "qwen3-rerank"
     rerank_initial_top_n: int = 50       # 初检候选数（rerank_enabled=True 时生效）
+    vector_search_timeout: float = 15.0  # 向量检索超时秒数（当前 Mock/Milvus Lite 预留接口，Milvus standalone 透传）
 
     # ---- Agent ----
     agent_enabled_tools: str = ""        # 留空 = 纯 RAG 链路；启用：已注册工具名逗号分隔，如 retrieval,memory

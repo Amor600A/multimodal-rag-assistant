@@ -184,43 +184,59 @@ def _media_embedder():
         )
     return embedder
 
-def embed_image(image_path: str):
+def embed_image(image_path: str, embedder=None):
     """生成图片向量（1024 维，与文本同一语义空间）。
 
     由嵌入器负责读取本地文件并转 Base64，支持 jpg/jpeg/png/bmp。
+    批量模式下可外部注入 embedder 复用单例，避免重复取。
     """
-    return _media_embedder().embed_image(image_path)
+    if embedder is None:
+        embedder = _media_embedder()
+    return embedder.embed_image(image_path)
 
-def embed_video(video_url: str):
+def embed_video(video_url: str, embedder=None):
     """生成视频向量（1024 维，与文本同一语义空间）。
 
     接口只接受公网可访问的 http(s) URL，本地视频文件需先上传到可访问地址。
     单条视频返回一个向量，不做多帧平均。
+    批量模式下可外部注入 embedder 复用单例，避免重复取。
     """
-    return _media_embedder().embed_video(video_url)
+    if embedder is None:
+        embedder = _media_embedder()
+    return embedder.embed_video(video_url)
 
-def _split_with_offsets(text: str) -> List[Tuple[str, int]]:
+def _split_with_offsets(
+    text: str, chunk_size: int = CHUNK_SIZE, chunk_overlap: int = CHUNK_OVERLAP
+) -> List[Tuple[str, int]]:
     """按语义边界切片，并返回每块在原文中的起始偏移。
 
     与直接按长度硬切相比，偏移量让页码映射可以精确定位到原文位置，
     不会因 chunk_overlap 导致字符位置漂移。
 
+    参数:
+        text: 待切片文本
+        chunk_size: 单块最大字符数（默认 500）
+        chunk_overlap: 块间重叠字符数（默认 100）
     返回:
         [(chunk_text, start_offset), ...]
     """
     chunks: list[tuple[str, int]] = []
+    # 全空白文本提前返回空列表，避免无意义循环
+    if not text.strip():
+        return chunks
+
     total = len(text)
     start = 0
 
     while start < total:
-        end = min(start + CHUNK_SIZE, total)
+        end = min(start + chunk_size, total)
         if end < total:
             # 只在窗口后半段找边界，避免切出过短的块
             window = text[start:end]
             cut = -1
             for sep in _SEPARATORS:
                 idx = window.rfind(sep)
-                if idx != -1 and idx >= CHUNK_SIZE // 2:
+                if idx != -1 and idx >= chunk_size // 2:
                     cut = idx + len(sep)
                     break
             if cut > 0:
@@ -233,24 +249,25 @@ def _split_with_offsets(text: str) -> List[Tuple[str, int]]:
         if end >= total:
             break
         # 向前回退 overlap 个字符，保持块间上下文连续
-        start = max(end - CHUNK_OVERLAP, start + 1)
+        start = max(end - chunk_overlap, start + 1)
 
     print(f"文本被分割成 {len(chunks)} 个块。")
     return chunks
 
 def compute_chunk_pages(
-    chunks: List[Tuple[str, int]], char_page_mapping: List[int]
+    chunks: List[Tuple[str, int]],
+    char_page_mapping: List[int],
+    verbose: bool = False,
 ) -> dict:
     """为每个文本块计算主要来源页码（取块内字符页码的众数）。
 
     参数:
         chunks: [(chunk_text, start_offset), ...]
         char_page_mapping: 每个字符对应的页码列表
+        verbose: True 时打印每个块的完整文本（调试用）；默认 False 只打印汇总
     返回:
         page_info: {文本块内容: 页码}
     """
-    print("\n========== 预处理切分的全部文本块 ==========")
-
     page_info: dict[str, int] = {}
     for i, (chunk, offset) in enumerate(chunks, start=1):
         # 按块在原文中的位置取对应页码范围
@@ -265,10 +282,12 @@ def compute_chunk_pages(
 
         page_info[chunk] = most_common_page
 
-        print(f"\n--- 第 {i} 个文本块 (长度: {len(chunk)} 字符, 页码: {most_common_page}) ---")
-        print(chunk)
+        if verbose:
+            print(f"\n--- 第 {i} 个文本块 (长度: {len(chunk)} 字符, 页码: {most_common_page}) ---")
+            print(chunk)
 
-    print("\n========== 预处理切分的全部文本块打印结束 ==========\n")
+    if verbose:
+        print()
     print(f"页码映射完成，共 {len(page_info)} 个文本块")
     return page_info
 
@@ -408,10 +427,17 @@ def process_text_with_splitter(
     file_type: str = "",
     use_page: bool = True,
     db=None,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+    verbose: bool = False,
 ):
     """处理文本并创建向量存储（保留原函数名与流程）。"""
-    chunks = _split_with_offsets(text)
-    page_info = compute_chunk_pages(chunks, char_page_mapping)
+    chunks = _split_with_offsets(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    # 切片后仍为空（全空白文档），跳过不写库
+    if not chunks:
+        print(f"切片后无有效内容，跳过入库：{doc_name}")
+        return db
+    page_info = compute_chunk_pages(chunks, char_page_mapping, verbose=verbose)
     return build_text_chunks(
         [chunk for chunk, _ in chunks],
         page_info,
@@ -433,6 +459,10 @@ def process_file(
     db_path: str,
     description: str | None = None,
     db=None,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+    verbose: bool = False,
+    embedder=None,
 ) -> None:
     """处理单个文件/视频 URL 入库（从 main 抽出的单文件流程，逻辑保持不变）。
 
@@ -444,6 +474,10 @@ def process_file(
         db_path: Milvus Lite 数据文件路径
         description: 图片/视频说明文本，缺省用文件名
         db: 可选，复用的 MilvusLite 实例（批量模式避免重复打开同一数据文件）
+        chunk_size: 切片单块最大字符数（默认 500）
+        chunk_overlap: 切片块间重叠字符数（默认 100）
+        verbose: True 时打印每个切片的完整文本（调试用）
+        embedder: 可选，预取的多模态嵌入器（批量模式复用单例，避免重复取）
     """
     is_url = file_arg.lower().startswith(("http://", "https://"))
     # URL 可能带查询串/签名参数（?token=...），先截断再取扩展名，否则匹配不上视频格式
@@ -463,7 +497,7 @@ def process_file(
     if not is_url and ext in _IMAGE_EXTS:
         doc_name = os.path.basename(file_arg)
         description = description or doc_name
-        vector = embed_image(file_arg)
+        vector = embed_image(file_arg, embedder=embedder)
         build_media(
             vector, description, doc_name, db_path,
             visibility, dept_id, owner_user_id, "img",
@@ -474,7 +508,7 @@ def process_file(
     # 视频：仅公网 URL，一条记录，不切片
     if is_url and ext in _VIDEO_EXTS:
         description = description or os.path.basename(path_part)
-        vector = embed_video(file_arg)
+        vector = embed_video(file_arg, embedder=embedder)
         build_media(
             vector, description, file_arg, db_path,
             visibility, dept_id, owner_user_id, "vid",
@@ -515,6 +549,9 @@ def process_file(
         file_type=ext.lstrip("."),
         use_page=use_page,
         db=db,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        verbose=verbose,
     )
 
 def _resolve_visibility(rel_path: str) -> Tuple[str, str | None, str | None]:
@@ -571,13 +608,14 @@ def _parse_video_manifest(text: str) -> List[dict]:
 
 
 def _process_video_manifest(
-    manifest_path: str, rel: str, db_path: str, db
+    manifest_path: str, rel: str, db_path: str, db, embedder=None
 ) -> Tuple[List[str], List[Tuple[str, str]]]:
     """处理 videos.txt 视频清单，URL 继承清单所在目录的权限标记。
 
     单条格式错误（缺 url、非 http(s) URL、非支持的视频扩展名）预先拦截记为失败，
     避免传入 process_file 变成 SystemExit 中止整批。
     返回 (成功条目, 失败条目)，格式与 process_directory 的汇总列表一致。
+    embedder 由 process_directory 预取后透传，避免重复初始化。
     """
     try:
         visibility, dept_id, owner_user_id = _resolve_visibility(rel)
@@ -603,7 +641,7 @@ def _process_video_manifest(
         try:
             print(f"\n>>> 入库视频 {item}（{_scope_tag(visibility, dept_id, owner_user_id)}）")
             process_file(url, visibility, dept_id, owner_user_id, db_path,
-                         description=description, db=db)
+                         description=description, db=db, embedder=embedder)
         except Exception as exc:
             failures.append((item, str(exc)))
             print(f"入库失败：{item} -> {exc}")
@@ -611,7 +649,13 @@ def _process_video_manifest(
         successes.append(item)
     return successes, failures
 
-def process_directory(dir_path: str, db_path: str) -> None:
+def process_directory(
+    dir_path: str,
+    db_path: str,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+    verbose: bool = False,
+) -> None:
     """按目录约定批量入库：遍历 --dir 下所有支持的文件，按所在目录打权限标。
 
     目录下的 videos.txt 视为视频 URL 清单逐行入库（不作为普通文本参与切片），
@@ -619,6 +663,13 @@ def process_directory(dir_path: str, db_path: str) -> None:
     目录结构不符约定）不中断整批，结束时打印成功/失败/跳过汇总。
     SystemExit 类环境错误（如嵌入后端不支持图片/视频）对所有同类文件必然重复发生，
     直接中止整批，不逐个重试。
+
+    参数:
+        dir_path: 批量入库根目录
+        db_path: Milvus Lite 数据文件路径
+        chunk_size: 切片单块最大字符数（默认 500）
+        chunk_overlap: 切片块间重叠字符数（默认 100）
+        verbose: True 时打印每个切片的完整文本（调试用）
     """
     if not os.path.isdir(dir_path):
         # 提前检查：避免静默产出"成功 0 个"，也避免为不存在的目录创建空数据文件
@@ -632,32 +683,65 @@ def process_directory(dir_path: str, db_path: str) -> None:
         dim=settings.embedding_dim,
     )
 
-    successes: list[str] = []
-    failures: list[tuple[str, str]] = []
-    skipped: list[str] = []
+    # dashscope_mm 模式下预取一次多模态嵌入器，后续 process_file/_process_video_manifest
+    # 透传进去，避免每个媒体文件都重走一次 get_embedder() + 类型校验
+    embedder = None
+    if settings.embedding_backend == "dashscope_mm":
+        try:
+            embedder = _media_embedder()
+        except SystemExit as exc:
+            # 嵌入器不可用（如 key 未配）直接中止整批，所有媒体文件必然重复失败
+            raise SystemExit(f"嵌入器初始化失败：{exc}") from exc
 
+    # 预扫统计总文件数，用于进度条显示
+    all_items: list[tuple[str, str, str]] = []  # (file_path, rel, kind)，kind=file|manifest
     for root, _dirs, files in os.walk(dir_path):
         for name in sorted(files):
             file_path = os.path.join(root, name)
             rel = os.path.relpath(file_path, dir_path)
-            # videos.txt 是视频 URL 清单，不作为普通文本入库，单独逐行处理
             if name.lower() == "videos.txt":
-                ok_items, err_items = _process_video_manifest(file_path, rel, db_path, db)
-                successes.extend(ok_items)
-                failures.extend(err_items)
-                continue
-            if os.path.splitext(name)[1].lower() not in _BATCH_EXTS:
+                all_items.append((file_path, rel, "manifest"))
+            elif os.path.splitext(name)[1].lower() in _BATCH_EXTS:
+                all_items.append((file_path, rel, "file"))
+
+    total = len(all_items)
+    print(f"\n批量入库：目录 {dir_path}，共 {total} 项待处理"
+          f"（chunk_size={chunk_size}, chunk_overlap={chunk_overlap}）")
+
+    successes: list[str] = []
+    failures: list[tuple[str, str]] = []
+    skipped: list[str] = []
+
+    for idx, (file_path, rel, kind) in enumerate(all_items, start=1):
+        if kind == "manifest":
+            print(f"\n[{idx}/{total}] videos.txt {rel}")
+            ok_items, err_items = _process_video_manifest(
+                file_path, rel, db_path, db, embedder=embedder,
+            )
+            successes.extend(ok_items)
+            failures.extend(err_items)
+            continue
+        try:
+            visibility, dept_id, owner_user_id = _resolve_visibility(rel)
+            print(f"\n[{idx}/{total}] 入库 {rel}（{_scope_tag(visibility, dept_id, owner_user_id)}）")
+            process_file(
+                file_path, visibility, dept_id, owner_user_id, db_path,
+                db=db, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                verbose=verbose, embedder=embedder,
+            )
+        except Exception as exc:
+            failures.append((rel, str(exc)))
+            print(f"入库失败：{rel} -> {exc}")
+            continue
+        successes.append(rel)
+
+    # 补录未扫描到但在 walk 中被跳过的文件（纯格式不支持）
+    for root, _dirs, files in os.walk(dir_path):
+        for name in sorted(files):
+            rel = os.path.relpath(os.path.join(root, name), dir_path)
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in _BATCH_EXTS and name.lower() != "videos.txt":
                 skipped.append(rel)
-                continue
-            try:
-                visibility, dept_id, owner_user_id = _resolve_visibility(rel)
-                print(f"\n>>> 入库 {rel}（{_scope_tag(visibility, dept_id, owner_user_id)}）")
-                process_file(file_path, visibility, dept_id, owner_user_id, db_path, db=db)
-            except Exception as exc:
-                failures.append((rel, str(exc)))
-                print(f"入库失败：{rel} -> {exc}")
-                continue
-            successes.append(rel)
 
     print("\n========== 批量入库汇总 ==========")
     print(f"成功 {len(successes)} 个，失败 {len(failures)} 个，跳过（不支持格式）{len(skipped)} 个")
@@ -682,6 +766,24 @@ def main() -> None:
     parser.add_argument("--owner-user-id", default=None, help="visibility=private 时必填")
     parser.add_argument("--db-path", default=None, help="覆盖 MILVUS_DB_PATH")
     parser.add_argument("--description", default=None, help="图片/视频的说明文本，缺省用文件名")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=CHUNK_SIZE,
+        help=f"切片单块最大字符数（默认 {CHUNK_SIZE}）",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=CHUNK_OVERLAP,
+        help=f"切片块间重叠字符数（默认 {CHUNK_OVERLAP}）",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="打印每个切片的完整文本（调试用）；默认只打印汇总",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -700,7 +802,12 @@ def main() -> None:
                 "--dir 批量模式下不接受位置参数及 "
                 "--visibility/--dept-id/--owner-user-id/--description"
             )
-        process_directory(args.dir_path, db_path)
+        process_directory(
+            args.dir_path, db_path,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            verbose=args.verbose,
+        )
     else:
         if not args.file:
             raise SystemExit("必须提供文档路径，或使用 --dir 指定批量入库目录")
@@ -715,6 +822,9 @@ def main() -> None:
             args.owner_user_id,
             db_path,
             description=args.description,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            verbose=args.verbose,
         )
     print(f"\n知识库构建完成，数据文件: {db_path}")
 
